@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "remote-laravel-files": {
+      "command": "ssh",
+      "args": [
+        "your-user@your-server.com",
+        "cd /home/web/ssl-shop.jp/acme_shop/mcp-server && npm start"
+      ],
+      "env": {
+        "NODE_ENV": "production"
+      }
+    }
+  }
+}

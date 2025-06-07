@@ -1,0 +1,26 @@
+{
+  "name": "file-operations-mcp-server",
+  "version": "1.0.0",
+  "description": "ファイル操作を行うMCPサーバー",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.25.56"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.18",
+    "@types/express": "^5.0.2",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.5.0"
+  },
+  "bin": {
+    "file-operations-mcp-server": "./dist/index.js"
+  }
+}
