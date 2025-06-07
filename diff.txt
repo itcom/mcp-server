@@ -1,0 +1,1419 @@
+diff --git a/src/index.ts b/src/index.ts
+index 1f01c5e..9038e12 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1,4 +1,4 @@
+-// Web版Claude専用MCPサーバー（WebSocket対応版）
++// Web版Claude専用MCPサーバー（公式仕様完全対応版 v5.0.0）
+ import { config } from 'dotenv';
+ config();
+ 
+@@ -6,56 +6,60 @@ import express, { Request, Response, NextFunction } from 'express';
+ import { randomUUID } from 'node:crypto';
+ import fs from 'fs/promises';
+ import path from 'path';
+-import { WebSocketServer, WebSocket } from 'ws';
+-import http from 'http';
+ 
+ const app = express();
+ 
+-// 基本設定 - .envのSERVER_ROOTが読み込まれる
++// 基本設定
+ const SERVER_ROOT = process.env.SERVER_ROOT || process.cwd();
+ const ALLOWED_EXTENSIONS = ['.php', '.js', '.ts', '.json', '.md', '.txt', '.env.example', '.yaml', '.yml', '.blade.php', '.service'];
+ const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001;
+ 
+-// セッション情報の型定義
++// セッション管理
+ interface SessionInfo {
+   sessionId: string;
+   endpoint: string;
+   startTime: Date;
+   isActive: boolean;
+-  type: 'sse' | 'websocket';
++  lastActivity: Date;
++  clientInfo?: string;
+ }
+ 
+-// セッション管理
+ const activeSessions = new Map<string, SessionInfo>();
+ 
+ // ミドルウェア設定
+ app.use(express.json({ limit: '10mb' }));
+ app.use(express.urlencoded({ extended: true }));
+ 
+-// CORS設定（Web版Claude用）
++// CORS設定（Web版Claude対応）
+ app.use((req: Request, res: Response, next: NextFunction): void => {
+   res.header('Access-Control-Allow-Origin', '*');
+   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+-  res.header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, Cache-Control');
+-  res.header('Access-Control-Expose-Headers', 'Content-Type');
++  res.header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, Cache-Control, X-Requested-With');
++  res.header('Access-Control-Expose-Headers', 'Content-Type, X-Session-ID');
++  res.header('Access-Control-Max-Age', '86400');
+ 
+   if (req.method === 'OPTIONS') {
+     res.sendStatus(200);
+-  } else {
+-    next();
++    return;
+   }
++  next();
+ });
+ 
+ // ログミドルウェア
+ app.use((req: Request, res: Response, next: NextFunction): void => {
+-  console.log(`${req.method} ${req.path}`, {
+-    userAgent: req.headers['user-agent']?.substring(0, 50),
+-    authorization: req.headers.authorization ? 'Bearer ***' : 'None'
++  const timestamp = new Date().toISOString();
++  const userAgent = req.headers['user-agent']?.substring(0, 100) || 'Unknown';
++  const clientInfo = userAgent.includes('Claude') ? 'Web版Claude' : 'その他';
++  
++  console.log(`[${timestamp}] ${req.method} ${req.path}`, {
++    clientInfo,
++    authorization: req.headers.authorization ? 'Bearer ***' : 'None',
++    contentType: req.headers['content-type'] || 'None'
+   });
+   next();
+ });
+ 
+-// ファイルシステム操作関数
++// ユーティリティ関数
+ function sanitizePath(filePath: string): string {
+   const fullPath = path.resolve(SERVER_ROOT, filePath);
+   if (!fullPath.startsWith(path.resolve(SERVER_ROOT))) {
+@@ -69,6 +73,7 @@ function isAllowedFile(filePath: string): boolean {
+   return ALLOWED_EXTENSIONS.includes(ext) || ext === '';
+ }
+ 
++// ファイルシステム操作関数
+ async function getFilesList(dir: string, recursive: boolean, includeHidden: boolean, excludeDirs: string[] = []): Promise<any[]> {
+   const files: any[] = [];
+   try {
+@@ -108,35 +113,7 @@ async function getFilesList(dir: string, recursive: boolean, includeHidden: bool
+   return files;
+ }
+ 
+-async function searchFiles(dir: string, pattern?: string, contentSearch?: string, fileExtension?: string, excludeDirs: string[] = []): Promise<any[]> {
+-  const results: any[] = [];
+-  const files = await getFilesList(dir, true, false, excludeDirs);
+-
+-  for (const file of files) {
+-    if (file.type === 'directory') continue;
+-
+-    let matches = true;
+-    if (pattern) {
+-      const regex = new RegExp(pattern, 'i');
+-      matches = matches && regex.test(file.name);
+-    }
+-    if (fileExtension) {
+-      matches = matches && file.name.endsWith(fileExtension);
+-    }
+-    if (contentSearch && matches) {
+-      try {
+-        const fullPath = path.resolve(SERVER_ROOT, file.path);
+-        const content = await fs.readFile(fullPath, 'utf8');
+-        matches = matches && content.includes(contentSearch);
+-      } catch (error) {
+-        matches = false;
+-      }
+-    }
+-    if (matches) results.push(file);
+-  }
+-  return results;
+-}
+-
++// Laravel構造分析
+ async function getLaravelStructure(projectRoot: string, includeConfig: boolean): Promise<any> {
+   const structure: any = {
+     controllers: [],
+@@ -161,14 +138,7 @@ async function getLaravelStructure(projectRoot: string, includeConfig: boolean):
+     try {
+       const modelsPath = path.join(projectRoot, 'app/Models');
+       structure.models = await getFilesList(modelsPath, true, false);
+-    } catch (e) {
+-      try {
+-        const appFiles = await getFilesList(path.join(projectRoot, 'app'), false, false);
+-        structure.models = appFiles.filter(file =>
+-          file.type === 'file' && file.name.endsWith('.php') && !file.name.includes('Http')
+-        );
+-      } catch (e) { }
+-    }
++    } catch (e) { }
+ 
+     // Views
+     try {
+@@ -217,8 +187,6 @@ async function getLaravelStructure(projectRoot: string, includeConfig: boolean):
+ 
+ // ツール実行関数
+ async function executeToolCall(toolName: string, toolArgs: any): Promise<any> {
+-  let result;
+-  
+   switch (toolName) {
+     case 'list_files':
+       const dir = sanitizePath(toolArgs.directory || ".");
+@@ -228,54 +196,50 @@ async function executeToolCall(toolName: string, toolArgs: any): Promise<any> {
+         toolArgs.include_hidden || false,
+         toolArgs.exclude_dirs || ["vendor", "node_modules", "storage", ".git"]
+       );
+-      result = {
++      return {
+         content: [{
+           type: "text",
+           text: `📁 ディレクトリ: ${toolArgs.directory || '.'}\n📊 ファイル数: ${files.length}\n\n${JSON.stringify(files, null, 2)}`
+         }]
+       };
+-      break;
+ 
+     case 'read_file':
+       if (!toolArgs.file_path) throw new Error("file_path is required");
+       const filePath = sanitizePath(toolArgs.file_path);
+       if (!isAllowedFile(filePath)) throw new Error('このファイル形式は許可されていません');
+       const content = await fs.readFile(filePath, toolArgs.encoding || 'utf8');
+-      result = {
++      return {
+         content: [{
+           type: "text",
+           text: `📄 ファイル: ${toolArgs.file_path}\n📏 サイズ: ${content.length} characters\n\n${content}`
+         }]
+       };
+-      break;
+ 
+     case 'get_laravel_structure':
+       const projectPath = sanitizePath(toolArgs.project_root || ".");
+       const structure = await getLaravelStructure(projectPath, toolArgs.include_config !== false);
+-      result = {
++      return {
+         content: [{
+           type: "text",
+           text: `🏗️ Laravel構造分析\n📂 プロジェクト: ${toolArgs.project_root || '.'}\n\n${JSON.stringify(structure, null, 2)}`
+         }]
+       };
+-      break;
+ 
+     case 'search_files':
+       const searchPath = sanitizePath(toolArgs.directory || ".");
+-      const searchResults = await searchFiles(
++      const searchResults = await searchFilesByPattern(
+         searchPath,
+         toolArgs.pattern,
+         toolArgs.content_search,
+         toolArgs.file_extension,
+         toolArgs.exclude_dirs || ["vendor", "node_modules", "storage", ".git"]
+       );
+-      result = {
++      return {
+         content: [{
+           type: "text",
+           text: `🔍 検索結果\n📂 対象: ${toolArgs.directory || '.'}\n📊 結果数: ${searchResults.length}\n\n${JSON.stringify(searchResults, null, 2)}`
+         }]
+       };
+-      break;
+ 
+     case 'get_server_info':
+       const serverInfo = {
+@@ -285,243 +249,142 @@ async function executeToolCall(toolName: string, toolArgs: any): Promise<any> {
+         uptime: Math.round(process.uptime()),
+         allowedExtensions: ALLOWED_EXTENSIONS,
+         timestamp: new Date().toISOString(),
+-        version: "4.0.0",
+-        optimizedFor: "Web版Claude",
+-        activeSessions: activeSessions.size
++        version: "5.0.0",
++        optimizedFor: "Web版Claude（公式仕様対応）",
++        activeSessions: activeSessions.size,
++        protocol: "MCP 2025-03-26"
+       };
+-      result = {
++      return {
+         content: [{
+           type: "text",
+           text: `🖥️ サーバー情報\n⏱️ 稼働時間: ${Math.round(process.uptime())}秒\n📡 最適化: Web版Claude\n\n${JSON.stringify(serverInfo, null, 2)}`
+         }]
+       };
+-      break;
+ 
+     default:
+       throw new Error(`Unknown tool: ${toolName}`);
+   }
+-
+-  return result;
+ }
+ 
+-// MCP JSON-RPC ハンドラー関数
+-async function handleMcpRequest(request: any): Promise<any> {
+-  const { jsonrpc, id, method, params } = request;
+-
+-  if (jsonrpc !== "2.0") {
+-    return {
+-      jsonrpc: "2.0",
+-      id: id || null,
+-      error: { code: -32600, message: "Invalid Request" }
+-    };
+-  }
+-
+-  switch (method) {
+-    case 'initialize':
+-      return {
+-        jsonrpc: "2.0",
+-        id,
+-        result: {
+-          protocolVersion: "2024-11-05",
+-          capabilities: { tools: { listChanged: true } },
+-          serverInfo: {
+-            name: "remote-file-operations-server",
+-            version: "4.0.0",
+-            description: "Laravel開発用ファイル操作サーバー（WebSocket対応）"
+-          }
+-        }
+-      };
+-
+-    case 'tools/list':
+-      return {
+-        jsonrpc: "2.0",
+-        id,
+-        result: {
+-          tools: [
+-            {
+-              name: "list_files",
+-              description: "ディレクトリ内のファイル一覧を取得します",
+-              inputSchema: {
+-                type: "object",
+-                properties: {
+-                  directory: { type: "string", default: "." },
+-                  recursive: { type: "boolean", default: false },
+-                  include_hidden: { type: "boolean", default: false },
+-                  exclude_dirs: { type: "array", items: { type: "string" }, default: ["vendor", "node_modules", "storage", ".git"] }
+-                }
+-              }
+-            },
+-            {
+-              name: "read_file",
+-              description: "ファイルの内容を読み取ります",
+-              inputSchema: {
+-                type: "object",
+-                properties: {
+-                  file_path: { type: "string" },
+-                  encoding: { type: "string", default: "utf8" }
+-                },
+-                required: ["file_path"]
+-              }
+-            },
+-            {
+-              name: "get_laravel_structure",
+-              description: "Laravelプロジェクトの構造を取得します",
+-              inputSchema: {
+-                type: "object",
+-                properties: {
+-                  project_root: { type: "string", default: "." },
+-                  include_config: { type: "boolean", default: true }
+-                }
+-              }
+-            },
+-            {
+-              name: "search_files",
+-              description: "ファイル検索を行います",
+-              inputSchema: {
+-                type: "object",
+-                properties: {
+-                  directory: { type: "string", default: "." },
+-                  pattern: { type: "string" },
+-                  content_search: { type: "string" },
+-                  file_extension: { type: "string" }
+-                }
+-              }
+-            },
+-            {
+-              name: "get_server_info",
+-              description: "サーバー情報を取得します",
+-              inputSchema: { type: "object", properties: {} }
+-            }
+-          ]
+-        }
+-      };
+-
+-    case 'tools/call':
+-      const toolName = params?.name;
+-      const toolArgs = params?.arguments || {};
++async function searchFilesByPattern(dir: string, pattern?: string, contentSearch?: string, fileExtension?: string, excludeDirs: string[] = []): Promise<any[]> {
++  const results: any[] = [];
++  const files = await getFilesList(dir, true, false, excludeDirs);
+ 
+-      if (!toolName) {
+-        return {
+-          jsonrpc: "2.0",
+-          id,
+-          error: { code: -32602, message: "Tool name is required" }
+-        };
+-      }
++  for (const file of files) {
++    if (file.type === 'directory') continue;
+ 
++    let matches = true;
++    if (pattern) {
++      const regex = new RegExp(pattern, 'i');
++      matches = matches && regex.test(file.name);
++    }
++    if (fileExtension) {
++      matches = matches && file.name.endsWith(fileExtension);
++    }
++    if (contentSearch && matches) {
+       try {
+-        const result = await executeToolCall(toolName, toolArgs);
+-        console.log(`✅ ツール実行完了: ${toolName}`);
+-        return { jsonrpc: "2.0", id, result };
+-      } catch (toolError) {
+-        console.error(`❌ ツール実行エラー: ${toolName}`, toolError);
+-        return {
+-          jsonrpc: "2.0",
+-          id,
+-          error: {
+-            code: -32603,
+-            message: `Tool execution failed: ${toolError instanceof Error ? toolError.message : String(toolError)}`
+-          }
+-        };
++        const fullPath = path.resolve(SERVER_ROOT, file.path);
++        const content = await fs.readFile(fullPath, 'utf8');
++        matches = matches && content.includes(contentSearch);
++      } catch (error) {
++        matches = false;
+       }
+-
+-    case 'ping':
+-      return {
+-        jsonrpc: "2.0",
+-        id: id || null,
+-        result: {
+-          status: "pong",
+-          timestamp: new Date().toISOString(),
+-          version: "4.0.0"
+-        }
+-      };
+-
+-    default:
+-      return {
+-        jsonrpc: "2.0",
+-        id,
+-        error: { code: -32601, message: `Method not found: ${method}` }
+-      };
++    }
++    if (matches) results.push(file);
+   }
++  return results;
+ }
+ 
++
+ // =================================================================
+-// Web版Claude専用エンドポイント: /mcp-streamable (温存)
++// Web版Claude専用SSEエンドポイント: /mcp-test
+ // =================================================================
++// Web版Claude専用プロトコル修正（9秒タイムアウト解決版）
++
++// Web版Claude完全対応版（9秒タイムアウト完全解決）
+ 
+-// GET: SSE接続（Web版Claudeが使用）
+-app.get('/mcp-streamable', (req: Request, res: Response): void => {
++app.get('/mcp-test', (req: Request, res: Response): void => {
+   const sessionId = randomUUID();
+-  console.log('🚀 Web版Claude SSE接続:', {
++  
++  console.log('🎯 Web版Claude SSE接続開始:', {
+     sessionId: sessionId.substring(0, 8),
+-    userAgent: req.headers['user-agent']?.substring(0, 50),
+-    authorization: req.headers.authorization ? 'Bearer ***' : 'None'
++    userAgent: req.headers['user-agent'],
++    timestamp: new Date().toISOString()
+   });
+ 
++  // セッション管理
+   activeSessions.set(sessionId, {
+     sessionId,
+-    endpoint: '/mcp-streamable',
++    endpoint: '/mcp-test',
+     startTime: new Date(),
+     isActive: true,
+-    type: 'sse'
++    lastActivity: new Date(),
++    clientInfo: req.headers['user-agent']?.substring(0, 100) || 'Unknown'
+   });
+ 
+   try {
+-    // SSEヘッダー
++    // Web版Claude完全対応SSEヘッダー
+     res.writeHead(200, {
+-      'Content-Type': 'text/event-stream',
+-      'Cache-Control': 'no-cache, no-store, must-revalidate',
++      'Content-Type': 'text/event-stream; charset=utf-8',
++      'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0',
++      'Pragma': 'no-cache',
++      'Expires': '0',
+       'Access-Control-Allow-Origin': '*',
+-      'Access-Control-Allow-Headers': 'Authorization, Content-Type, Cache-Control',
+-      'Connection': 'keep-alive'
++      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
++      'Access-Control-Allow-Headers': 'Authorization, Content-Type, Cache-Control, Accept',
++      'Access-Control-Expose-Headers': 'X-Session-ID, X-Protocol-Version',
++      'Connection': 'keep-alive',
++      'X-Accel-Buffering': 'no',
++      'Transfer-Encoding': 'chunked',
++      'X-Session-ID': sessionId.substring(0, 8),
++      'X-Protocol-Version': '2025-03-26'
+     });
+ 
+-    // 進捗通知関数
+-    const sendProgress = (message: string, percentage: number) => {
+-      const progress = {
+-        jsonrpc: "2.0",
+-        method: "notifications/progress",
+-        params: {
+-          progressToken: sessionId,
+-          progress: percentage,
+-          total: 100,
+-          message: message
+-        }
+-      };
+-      res.write(`data: ${JSON.stringify(progress)}\n\n`);
+-    };
+-
+-    // Step 1: 即座の進捗通知
+-    sendProgress("接続を初期化中...", 10);
+-
+-    // Step 2: 初期化メッセージ
+-    setTimeout(() => {
+-      if (!res.destroyed && res.writable && activeSessions.get(sessionId)?.isActive) {
+-        sendProgress("サーバー機能を読み込み中...", 30);
++    // Web版Claude初期化シーケンス（完全版）
++    
++    // Step 0: immediate connection acknowledgment (critical!)
++    res.write(`event: connection\ndata: {"status":"established","sessionId":"${sessionId.substring(0, 8)}","timestamp":"${new Date().toISOString()}"}\n\n`);
+ 
+-        const initMessage = {
+-          jsonrpc: "2.0",
+-          method: "notifications/initialized",
+-          params: {
+-            protocolVersion: "2024-11-05",
+-            capabilities: { tools: { listChanged: true }, prompts: {}, resources: {} },
+-            serverInfo: {
+-              name: "remote-file-operations-server",
+-              version: "4.0.0",
+-              description: "Laravel開発用ファイル操作サーバー（Web版Claude専用）"
+-            }
+-          }
+-        };
++    // Step 1: 即座にprotocol handshake
++    const handshake = {
++      jsonrpc: "2.0",
++      method: "notifications/handshake",
++      params: {
++        protocolVersion: "2025-03-26",
++        serverVersion: "5.0.0",
++        capabilities: ["tools", "streaming", "oauth"],
++        timestamp: new Date().toISOString()
++      }
++    };
++    res.write(`event: handshake\ndata: ${JSON.stringify(handshake)}\n\n`);
+ 
+-        res.write(`data: ${JSON.stringify(initMessage)}\n\n`);
+-        console.log('📡 初期化完了', { sessionId: sessionId.substring(0, 8) });
++    // Step 2: initialized notification (immediate)
++    const initMessage = {
++      jsonrpc: "2.0",
++      method: "notifications/initialized",
++      params: {
++        protocolVersion: "2025-03-26",
++        capabilities: { 
++          tools: { listChanged: true },
++          prompts: {},
++          resources: {},
++          streaming: true,
++          oauth: true
++        },
++        serverInfo: {
++          name: "remote-file-operations-server",
++          version: "5.0.0",
++          description: "Laravel開発用ファイル操作サーバー（Web版Claude専用）",
++          vendor: "SSL-SHOP",
++          protocol: "mcp-2025-03-26"
++        }
+       }
+-    }, 100);
++    };
++    res.write(`event: initialized\ndata: ${JSON.stringify(initMessage)}\n\n`);
+ 
+-    // Step 3: ツール一覧
++    // Step 3: tools/list with proper event type (CRITICAL)
+     setTimeout(() => {
+       if (!res.destroyed && res.writable && activeSessions.get(sessionId)?.isActive) {
+-        sendProgress("ツール一覧を準備中...", 60);
+-
+         const toolsMessage = {
+           jsonrpc: "2.0",
+           method: "tools/list",
+@@ -533,10 +396,14 @@ app.get('/mcp-streamable', (req: Request, res: Response): void => {
+                 inputSchema: {
+                   type: "object",
+                   properties: {
+-                    directory: { type: "string", default: ".", description: "対象ディレクトリ" },
+-                    recursive: { type: "boolean", default: false, description: "再帰的に取得" },
+-                    include_hidden: { type: "boolean", default: false, description: "隠しファイルを含む" },
+-                    exclude_dirs: { type: "array", items: { type: "string" }, default: ["vendor", "node_modules", "storage", ".git"] }
++                    directory: { type: "string", default: "." },
++                    recursive: { type: "boolean", default: false },
++                    include_hidden: { type: "boolean", default: false },
++                    exclude_dirs: { 
++                      type: "array", 
++                      items: { type: "string" }, 
++                      default: ["vendor", "node_modules", "storage", ".git"] 
++                    }
+                   }
+                 }
+               },
+@@ -546,8 +413,8 @@ app.get('/mcp-streamable', (req: Request, res: Response): void => {
+                 inputSchema: {
+                   type: "object",
+                   properties: {
+-                    file_path: { type: "string", description: "ファイルパス" },
+-                    encoding: { type: "string", default: "utf8", description: "エンコーディング" }
++                    file_path: { type: "string" },
++                    encoding: { type: "string", default: "utf8" }
+                   },
+                   required: ["file_path"]
+                 }
+@@ -558,8 +425,8 @@ app.get('/mcp-streamable', (req: Request, res: Response): void => {
+                 inputSchema: {
+                   type: "object",
+                   properties: {
+-                    project_root: { type: "string", default: ".", description: "プロジェクトルート" },
+-                    include_config: { type: "boolean", default: true, description: "設定ファイルを含む" }
++                    project_root: { type: "string", default: "." },
++                    include_config: { type: "boolean", default: true }
+                   }
+                 }
+               },
+@@ -570,9 +437,9 @@ app.get('/mcp-streamable', (req: Request, res: Response): void => {
+                   type: "object",
+                   properties: {
+                     directory: { type: "string", default: "." },
+-                    pattern: { type: "string", description: "ファイル名パターン" },
+-                    content_search: { type: "string", description: "内容検索" },
+-                    file_extension: { type: "string", description: "ファイル拡張子" }
++                    pattern: { type: "string" },
++                    content_search: { type: "string" },
++                    file_extension: { type: "string" }
+                   }
+                 }
+               },
+@@ -584,165 +451,310 @@ app.get('/mcp-streamable', (req: Request, res: Response): void => {
+             ]
+           }
+         };
+-
+-        res.write(`data: ${JSON.stringify(toolsMessage)}\n\n`);
+-        console.log('🔧 ツール一覧送信', { sessionId: sessionId.substring(0, 8) });
++        
++        // Use proper event type for tools
++        res.write(`event: tools\ndata: ${JSON.stringify(toolsMessage)}\n\n`);
++        console.log('🔧 ツール一覧送信:', { sessionId: sessionId.substring(0, 8) });
+       }
+-    }, 500);
++    }, 5);
+ 
+-    // Step 4: 準備完了
++    // Step 4: ready event (Web版Claude expects this!)
+     setTimeout(() => {
+       if (!res.destroyed && res.writable && activeSessions.get(sessionId)?.isActive) {
+-        sendProgress("準備完了", 100);
+-
+-        const readyMessage = {
++        const readyEvent = {
+           jsonrpc: "2.0",
+-          method: "notifications/message",
++          method: "notifications/ready",
+           params: {
+-            level: "info",
+-            message: "Laravel開発用MCPツールが利用可能になりました"
++            status: "ready",
++            message: "MCP server ready for tool invocations",
++            timestamp: new Date().toISOString(),
++            session: sessionId.substring(0, 8)
+           }
+         };
++        res.write(`event: ready\ndata: ${JSON.stringify(readyEvent)}\n\n`);
++        console.log('🎯 準備完了:', { sessionId: sessionId.substring(0, 8) });
++      }
++    }, 10);
+ 
+-        res.write(`data: ${JSON.stringify(readyMessage)}\n\n`);
+-        console.log('🎯 準備完了', { sessionId: sessionId.substring(0, 8) });
++    // Step 5: keep server alive with multiple strategies
++    
++    // Strategy 1: Standard SSE keep-alive (every 5 seconds)
++    const basicKeepAlive = setInterval(() => {
++      const session = activeSessions.get(sessionId);
++      if (!res.destroyed && res.writable && session?.isActive) {
++        res.write(`: heartbeat ${Date.now()}\n\n`);
++        session.lastActivity = new Date();
++      } else {
++        clearInterval(basicKeepAlive);
+       }
+-    }, 1000);
++    }, 5000);
+ 
+-    // キープアライブ（8秒間隔）
+-    setTimeout(() => {
+-      const keepAlive = setInterval(() => {
+-        const session = activeSessions.get(sessionId);
+-        if (!res.destroyed && res.writable && session?.isActive) {
+-          const uptime = Date.now() - session.startTime.getTime();
+-          sendProgress(`接続維持中 (${Math.round(uptime / 1000)}秒)`, 100);
+-        } else {
+-          clearInterval(keepAlive);
+-          if (session) session.isActive = false;
+-        }
+-      }, 8000);
++    // Strategy 2: MCP heartbeat events (every 8 seconds - BEFORE 9 second timeout)
++    const mcpHeartbeat = setInterval(() => {
++      const session = activeSessions.get(sessionId);
++      if (!res.destroyed && res.writable && session?.isActive) {
++        const heartbeat = {
++          jsonrpc: "2.0",
++          method: "notifications/heartbeat",
++          params: {
++            timestamp: new Date().toISOString(),
++            uptime: Date.now() - session.startTime.getTime(),
++            status: "alive"
++          }
++        };
++        res.write(`event: heartbeat\ndata: ${JSON.stringify(heartbeat)}\n\n`);
++      } else {
++        clearInterval(mcpHeartbeat);
++      }
++    }, 8000);
+ 
++    // Strategy 3: Ping-pong to prevent timeout (every 6 seconds)
++    const pingInterval = setInterval(() => {
+       const session = activeSessions.get(sessionId);
+-      if (session) (session as any).keepAliveInterval = keepAlive;
+-    }, 5000);
++      if (!res.destroyed && res.writable && session?.isActive) {
++        const ping = {
++          jsonrpc: "2.0",
++          method: "ping",
++          id: `ping_${Date.now()}`,
++          params: { timestamp: new Date().toISOString() }
++        };
++        res.write(`event: ping\ndata: ${JSON.stringify(ping)}\n\n`);
++      } else {
++        clearInterval(pingInterval);
++      }
++    }, 6000);
+ 
+-    // クリーンアップ
++    // Strategy 4: Status updates (every 15 seconds)
++    const statusInterval = setInterval(() => {
++      const session = activeSessions.get(sessionId);
++      if (!res.destroyed && res.writable && session?.isActive) {
++        const status = {
++          jsonrpc: "2.0",
++          method: "notifications/status",
++          params: {
++            status: "connected",
++            uptime: Math.round((Date.now() - session.startTime.getTime()) / 1000),
++            timestamp: new Date().toISOString()
++          }
++        };
++        res.write(`event: status\ndata: ${JSON.stringify(status)}\n\n`);
++      } else {
++        clearInterval(statusInterval);
++      }
++    }, 15000);
++
++    // Enhanced cleanup with proper event notification
+     const cleanup = (reason: string) => {
+       const session = activeSessions.get(sessionId);
+       if (session) {
+         session.isActive = false;
+         const duration = Date.now() - session.startTime.getTime();
++        
++        // Send disconnect notification if possible
++        if (!res.destroyed && res.writable) {
++          const disconnect = {
++            jsonrpc: "2.0",
++            method: "notifications/disconnect",
++            params: {
++              reason,
++              duration: Math.round(duration / 1000),
++              timestamp: new Date().toISOString()
++            }
++          };
++          try {
++            res.write(`event: disconnect\ndata: ${JSON.stringify(disconnect)}\n\n`);
++          } catch (e) {
++            // Ignore errors during cleanup
++          }
++        }
++        
+         console.log('🔌 接続終了:', {
+           sessionId: sessionId.substring(0, 8),
+           reason,
+           duration: `${Math.round(duration / 1000)}s`
+         });
+-        if ((session as any).keepAliveInterval) {
+-          clearInterval((session as any).keepAliveInterval);
+-        }
++        
+         activeSessions.delete(sessionId);
+       }
++      
++      // Clear all intervals
++      clearInterval(basicKeepAlive);
++      clearInterval(mcpHeartbeat);
++      clearInterval(pingInterval);
++      clearInterval(statusInterval);
+     };
+ 
++    // Enhanced event listeners
+     req.on('close', () => cleanup('client_close'));
+     req.on('error', (err) => cleanup(`client_error: ${err.message}`));
+     res.on('close', () => cleanup('response_close'));
+     res.on('error', (err) => cleanup(`response_error: ${err.message}`));
++    res.on('finish', () => cleanup('response_finish'));
++
++    // Backup timeout protection (20 minutes)
++    const backupTimeout = setTimeout(() => {
++      cleanup('server_timeout_20min');
++    }, 20 * 60 * 1000);
++
++    // Store cleanup function
++    (activeSessions.get(sessionId) as any).cleanup = () => {
++      clearTimeout(backupTimeout);
++      cleanup('manual_cleanup');
++    };
++
++    console.log('📡 初期化完了:', { sessionId: sessionId.substring(0, 8) });
+ 
+   } catch (error) {
+     console.error('❌ SSE接続エラー:', error);
+     activeSessions.delete(sessionId);
+     if (!res.headersSent) {
+-      res.status(500).json({ error: "sse_connection_failed" });
++      res.status(500).json({ 
++        error: "sse_connection_failed",
++        message: error instanceof Error ? error.message : String(error)
++      });
+     }
+   }
+ });
+ 
+-// POST: ツール実行（Web版Claudeが使用）
+-app.post('/mcp-streamable', async (req: Request, res: Response) => {
+-  try {
+-    console.log('🛠️ ツール実行:', {
++// POST: ツール実行（Web版Claude用）
++// Web版Claude専用POST処理（改良版）
++app.post('/mcp-test', (req: Request, res: Response): void => {
++  (async () => {
++    const startTime = Date.now();
++    
++    console.log('🛠️ Web版Claude ツール実行:', {
+       method: req.body.method,
+       toolName: req.body.params?.name,
+-      id: req.body.id
++      id: req.body.id,
++      timestamp: new Date().toISOString(),
++      userAgent: req.headers['user-agent']?.substring(0, 50)
+     });
+ 
+-    const response = await handleMcpRequest(req.body);
+-    res.json(response);
++    // Web版Claude専用ヘッダー設定
++    res.header('Content-Type', 'application/json; charset=utf-8');
++    res.header('Access-Control-Allow-Origin', '*');
++    res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, Cache-Control');
++    res.header('X-Protocol-Version', '2025-03-26');
++    res.header('X-Server-Version', '5.0.0');
+ 
+-  } catch (error) {
+-    console.error('❌ POST エラー:', error);
+-    res.status(500).json({
+-      jsonrpc: "2.0",
+-      id: req.body?.id || null,
+-      error: {
+-        code: -32603,
+-        message: error instanceof Error ? error.message : 'Internal error'
++    // リクエスト検証
++    if (!req.body || !req.body.jsonrpc) {
++      res.status(400).json({
++        jsonrpc: "2.0",
++        id: req.body?.id || null,
++        error: {
++          code: -32600,
++          message: "Invalid Request: missing jsonrpc field"
++        }
++      });
++      return;
++    }
++
++    // MCP リクエスト処理
++    try {
++      const response = await handleMcpRequest(req.body);
++      
++      // Web版Claude専用の応答拡張
++      if (response.result) {
++        response.result._meta = {
++          timestamp: new Date().toISOString(),
++          processingTime: Date.now() - startTime,
++          serverVersion: "5.0.0",
++          protocol: "mcp-2025-03-26"
++        };
+       }
+-    });
+-  }
+-});
+ 
+-// =================================================================
+-// WebSocket専用エンドポイント: /mcp-test
+-// =================================================================
++      const processingTime = Date.now() - startTime;
++      console.log(`✅ ツール実行完了: ${req.body.params?.name} (${processingTime}ms)`);
++      
++      res.json(response);
++    } catch (error) {
++      const processingTime = Date.now() - startTime;
++      console.error('❌ POST エラー:', {
++        error: error instanceof Error ? error.message : String(error),
++        toolName: req.body?.params?.name,
++        processingTime,
++        timestamp: new Date().toISOString()
++      });
+ 
+-// /mcp-test SSE エンドポイント（Web版Claude専用）
+-app.get('/mcp-test', (req: Request, res: Response): void => {
+-  const sessionId = randomUUID();
+-  
+-  console.log('🔍 /mcp-test SSE接続開始:', {
+-    sessionId: sessionId.substring(0, 8),
+-    userAgent: req.headers['user-agent'],
+-    accept: req.headers.accept,
+-    authorization: req.headers.authorization ? 'Bearer ***' : 'None',
+-    headers: JSON.stringify(req.headers, null, 2)
++      res.status(500).json({
++        jsonrpc: "2.0",
++        id: req.body?.id || null,
++        error: {
++          code: -32603,
++          message: error instanceof Error ? error.message : 'Internal server error',
++          data: {
++            timestamp: new Date().toISOString(),
++            processingTime,
++            serverVersion: "5.0.0"
++          }
++        }
++      });
++    }
++  })();
++});
++
++// Web版Claude専用の ping エンドポイント
++app.post('/mcp-test/ping', async (req: Request, res: Response) => {
++  res.json({
++    jsonrpc: "2.0",
++    id: req.body?.id || null,
++    result: {
++      status: "pong",
++      timestamp: new Date().toISOString(),
++      serverVersion: "5.0.0",
++      protocol: "mcp-2025-03-26",
++      uptime: process.uptime()
++    }
+   });
++});
+ 
+-  // SSE接続かチェック
+-  if (req.headers.accept?.includes('text/event-stream')) {
+-    // SSE接続として処理
+-    activeSessions.set(sessionId, {
+-      sessionId,
+-      endpoint: '/mcp-test',
+-      startTime: new Date(),
+-      isActive: true,
+-      type: 'sse'
+-    });
++// 改良されたMCPハンドラー（Web版Claude対応）
++async function handleMcpRequest(request: any): Promise<any> {
++  const { jsonrpc, id, method, params } = request;
+ 
+-    try {
+-      // SSEヘッダー設定
+-      res.writeHead(200, {
+-        'Content-Type': 'text/event-stream',
+-        'Cache-Control': 'no-cache, no-store, must-revalidate',
+-        'Access-Control-Allow-Origin': '*',
+-        'Access-Control-Allow-Headers': 'Authorization, Content-Type, Cache-Control',
+-        'Connection': 'keep-alive',
+-        'X-Accel-Buffering': 'no'
+-      });
++  if (jsonrpc !== "2.0") {
++    return {
++      jsonrpc: "2.0",
++      id: id || null,
++      error: { code: -32600, message: "Invalid Request" }
++    };
++  }
+ 
+-      // 即座に初期化メッセージ送信
+-      const initMessage = {
++  switch (method) {
++    case 'initialize':
++      return {
+         jsonrpc: "2.0",
+-        method: "notifications/initialized",
+-        params: {
+-          protocolVersion: "2024-11-05",
+-          capabilities: { tools: { listChanged: true }, prompts: {}, resources: {} },
++        id,
++        result: {
++          protocolVersion: "2025-03-26",
++          capabilities: { 
++            tools: { listChanged: true },
++            prompts: {},
++            resources: {},
++            streaming: true,
++            auth: true
++          },
+           serverInfo: {
+             name: "remote-file-operations-server",
+-            version: "4.0.0",
+-            description: "Laravel開発用ファイル操作サーバー（Web版Claude専用）"
++            version: "5.0.0",
++            description: "Laravel開発用ファイル操作サーバー（Web版Claude公式仕様対応）",
++            vendor: "SSL-SHOP",
++            protocol: "mcp-2025-03-26"
++          },
++          features: {
++            laravel: true,
++            fileOperations: true,
++            codeSearch: true,
++            structureAnalysis: true
+           }
+         }
+       };
+-      
+-      res.write(`data: ${JSON.stringify(initMessage)}\n\n`);
+-      console.log('📡 /mcp-test 初期化送信:', { sessionId: sessionId.substring(0, 8) });
+ 
+-      // ツール一覧を即座に送信
+-      const toolsMessage = {
++    case 'tools/list':
++      return {
+         jsonrpc: "2.0",
+-        method: "tools/list",
++        id,
+         result: {
+           tools: [
+             {
+@@ -754,7 +766,11 @@ app.get('/mcp-test', (req: Request, res: Response): void => {
+                   directory: { type: "string", default: "." },
+                   recursive: { type: "boolean", default: false },
+                   include_hidden: { type: "boolean", default: false },
+-                  exclude_dirs: { type: "array", items: { type: "string" }, default: ["vendor", "node_modules", "storage", ".git"] }
++                  exclude_dirs: { 
++                    type: "array", 
++                    items: { type: "string" }, 
++                    default: ["vendor", "node_modules", "storage", ".git"] 
++                  }
+                 }
+               }
+             },
+@@ -803,108 +819,68 @@ app.get('/mcp-test', (req: Request, res: Response): void => {
+         }
+       };
+ 
+-      res.write(`data: ${JSON.stringify(toolsMessage)}\n\n`);
+-      console.log('🔧 /mcp-test ツール一覧送信:', { sessionId: sessionId.substring(0, 8) });
+-
+-      // 準備完了メッセージ
+-      setTimeout(() => {
+-        if (!res.destroyed && res.writable && activeSessions.get(sessionId)?.isActive) {
+-          const readyMessage = {
+-            jsonrpc: "2.0",
+-            method: "notifications/message",
+-            params: {
+-              level: "info",
+-              message: "Laravel開発用MCPツールが利用可能になりました（/mcp-test専用）"
+-            }
+-          };
+-          res.write(`data: ${JSON.stringify(readyMessage)}\n\n`);
+-          console.log('🎯 /mcp-test 準備完了:', { sessionId: sessionId.substring(0, 8) });
+-        }
+-      }, 100);
+-
+-      // Keep-alive（60秒間隔）
+-      const keepAlive = setInterval(() => {
+-        const session = activeSessions.get(sessionId);
+-        if (!res.destroyed && res.writable && session?.isActive) {
+-          res.write(': heartbeat\n\n');
+-        } else {
+-          clearInterval(keepAlive);
+-          if (session) session.isActive = false;
+-        }
+-      }, 60000);
+-
+-      // クリーンアップ処理
+-      const cleanup = (reason: string) => {
+-        const session = activeSessions.get(sessionId);
+-        if (session) {
+-          session.isActive = false;
+-          const duration = Date.now() - session.startTime.getTime();
+-          console.log('🔌 /mcp-test 接続終了:', {
+-            sessionId: sessionId.substring(0, 8),
+-            reason,
+-            duration: `${Math.round(duration / 1000)}s`
+-          });
+-          activeSessions.delete(sessionId);
+-        }
+-        clearInterval(keepAlive);
+-      };
+-
+-      req.on('close', () => cleanup('client_close'));
+-      req.on('error', (err) => cleanup(`client_error: ${err.message}`));
+-      res.on('close', () => cleanup('response_close'));
+-      res.on('error', (err) => cleanup(`response_error: ${err.message}`));
++    case 'tools/call':
++      const toolName = params?.name;
++      const toolArgs = params?.arguments || {};
+ 
+-    } catch (error) {
+-      console.error('❌ /mcp-test SSE接続エラー:', error);
+-      activeSessions.delete(sessionId);
+-      if (!res.headersSent) {
+-        res.status(500).json({ error: "sse_connection_failed" });
++      if (!toolName) {
++        return {
++          jsonrpc: "2.0",
++          id,
++          error: { code: -32602, message: "Tool name is required" }
++        };
+       }
+-    }
+-  } else {
+-    // 通常のHTTP GETリクエストへの応答
+-    res.json({
+-      name: "MCP Test Server",
+-      version: "4.0.0",
+-      protocol: "sse",
+-      endpoint: "/mcp-test",
+-      description: "Laravel開発用ファイル操作サーバー（SSE対応）",
+-      capabilities: ["tools", "sse"],
+-      usage: "Use Accept: text/event-stream header for SSE connection"
+-    });
+-  }
+-});
+ 
+-// /mcp-test POST エンドポイント（ツール実行用）
+-app.post('/mcp-test', async (req: Request, res: Response) => {
+-  try {
+-    console.log('🛠️ /mcp-test ツール実行:', {
+-      method: req.body.method,
+-      toolName: req.body.params?.name,
+-      id: req.body.id
+-    });
++      try {
++        const result = await executeToolCall(toolName, toolArgs);
++        console.log(`✅ ツール実行完了: ${toolName}`);
++        return { jsonrpc: "2.0", id, result };
++      } catch (toolError) {
++        console.error(`❌ ツール実行エラー: ${toolName}`, toolError);
++        return {
++          jsonrpc: "2.0",
++          id,
++          error: {
++            code: -32603,
++            message: `Tool execution failed: ${toolError instanceof Error ? toolError.message : String(toolError)}`,
++            data: {
++              toolName,
++              timestamp: new Date().toISOString()
++            }
++          }
++        };
++      }
+ 
+-    const response = await handleMcpRequest(req.body);
+-    res.json(response);
++    case 'ping':
++      return {
++        jsonrpc: "2.0",
++        id: id || null,
++        result: {
++          status: "pong",
++          timestamp: new Date().toISOString(),
++          version: "5.0.0",
++          protocol: "mcp-2025-03-26",
++          uptime: process.uptime()
++        }
++      };
+ 
+-  } catch (error) {
+-    console.error('❌ /mcp-test POST エラー:', error);
+-    res.status(500).json({
+-      jsonrpc: "2.0",
+-      id: req.body?.id || null,
+-      error: {
+-        code: -32603,
+-        message: error instanceof Error ? error.message : 'Internal error'
+-      }
+-    });
++    default:
++      return {
++        jsonrpc: "2.0",
++        id,
++        error: { 
++          code: -32601, 
++          message: `Method not found: ${method}`,
++          data: {
++            availableMethods: ["initialize", "tools/list", "tools/call", "ping"]
++          }
++        }
++      };
+   }
+-});
+-
+-// HTTPサーバーを作成（WebSocketサーバー削除）
+-const server = http.createServer(app);
++}
+ 
+ // =================================================================
+-// OAuth エンドポイント（Web版Claude用）
++// OAuth エンドポイント（Web版Claude公式仕様対応）
+ // =================================================================
+ 
+ app.get('/.well-known/oauth-authorization-server', (req: Request, res: Response) => {
+@@ -914,35 +890,59 @@ app.get('/.well-known/oauth-authorization-server', (req: Request, res: Response)
+     "token_endpoint": "https://mcp.ssl-shop.jp/token",
+     "registration_endpoint": "https://mcp.ssl-shop.jp/register",
+     "jwks_uri": "https://mcp.ssl-shop.jp/.well-known/jwks.json",
+-    "scopes_supported": ["claudeai"],
++    "scopes_supported": ["claudeai", "mcp"],
+     "response_types_supported": ["code"],
+-    "grant_types_supported": ["authorization_code"],
+-    "token_endpoint_auth_methods_supported": ["client_secret_post"],
+-    "code_challenge_methods_supported": ["S256"]
++    "grant_types_supported": ["authorization_code", "refresh_token"],
++    "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
++    "code_challenge_methods_supported": ["S256"],
++    "revocation_endpoint": "https://mcp.ssl-shop.jp/revoke",
++    "introspection_endpoint": "https://mcp.ssl-shop.jp/introspect"
+   });
+ });
+ 
+ app.post('/register', (req: Request, res: Response) => {
+-  const clientId = `client_${Date.now()}`;
+-  const clientSecret = `secret_${Math.random().toString(36).substring(2)}`;
++  const clientId = `mcp_${Date.now()}_${Math.random().toString(36).substring(2)}`;
++  const clientSecret = `secret_${Math.random().toString(36).substring(2)}_${Date.now()}`;
++
++  console.log('📝 OAuth客戶端登録:', {
++    clientId: clientId.substring(0, 20) + '...',
++    timestamp: new Date().toISOString()
++  });
+ 
+   res.json({
+     "client_id": clientId,
+     "client_secret": clientSecret,
+     "client_id_issued_at": Math.floor(Date.now() / 1000),
+-    "client_secret_expires_at": 0
++    "client_secret_expires_at": 0,
++    "grant_types": ["authorization_code", "refresh_token"],
++    "response_types": ["code"],
++    "scope": "claudeai mcp",
++    "token_endpoint_auth_method": "client_secret_post"
+   });
+ });
+ 
+ app.get('/authorize', (req: Request, res: Response) => {
+-  const { redirect_uri, state } = req.query;
+-  const authCode = `auth_${Math.random().toString(36).substring(2)}`;
++  const { redirect_uri, state, client_id, scope, code_challenge, code_challenge_method } = req.query;
++  const authCode = `auth_${Date.now()}_${Math.random().toString(36).substring(2)}`;
++
++  console.log('🔐 OAuth認証要求:', {
++    clientId: typeof client_id === 'string' ? client_id.substring(0, 20) + '...' : 'None',
++    scope: scope || 'default',
++    timestamp: new Date().toISOString()
++  });
+ 
+-  const redirectUrl = new URL(redirect_uri as string);
+-  redirectUrl.searchParams.set('code', authCode);
+-  if (state) redirectUrl.searchParams.set('state', state as string);
++  try {
++    const redirectUrl = new URL(redirect_uri as string);
++    redirectUrl.searchParams.set('code', authCode);
++    if (state) redirectUrl.searchParams.set('state', state as string);
+ 
+-  res.redirect(redirectUrl.toString());
++    res.redirect(redirectUrl.toString());
++  } catch (error) {
++    res.status(400).json({
++      "error": "invalid_request",
++      "error_description": "Invalid redirect_uri"
++    });
++  }
+ });
+ 
+ app.post('/token', (req: Request, res: Response) => {
+@@ -959,18 +959,33 @@ app.post('/token', (req: Request, res: Response) => {
+       parsedBody = req.body;
+     }
+ 
+-    const { grant_type } = parsedBody;
++    const { grant_type, code, client_id, client_secret, refresh_token } = parsedBody;
++
++    console.log('🎫 トークン要求:', {
++      grantType: grant_type,
++      clientId: typeof client_id === 'string' ? client_id.substring(0, 20) + '...' : 'None',
++      timestamp: new Date().toISOString()
++    });
+ 
+     if (grant_type === 'authorization_code') {
+-      const accessToken = `access_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+-      const refreshToken = `refresh_${Date.now()}_${Math.random().toString(36).substring(2)}`;
++      const accessToken = `mcp_access_${Date.now()}_${Math.random().toString(36).substring(2)}`;
++      const refreshToken = `mcp_refresh_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+ 
+       res.json({
+         "access_token": accessToken,
+         "token_type": "Bearer",
+         "expires_in": 3600,
+         "refresh_token": refreshToken,
+-        "scope": "claudeai"
++        "scope": "claudeai mcp"
++      });
++    } else if (grant_type === 'refresh_token') {
++      const newAccessToken = `mcp_access_${Date.now()}_${Math.random().toString(36).substring(2)}`;
++      
++      res.json({
++        "access_token": newAccessToken,
++        "token_type": "Bearer",
++        "expires_in": 3600,
++        "scope": "claudeai mcp"
+       });
+     } else {
+       res.status(400).json({
+@@ -978,6 +993,7 @@ app.post('/token', (req: Request, res: Response) => {
+       });
+     }
+   } catch (error) {
++    console.error('❌ トークンエラー:', error);
+     res.status(500).json({
+       "error": "server_error"
+     });
+@@ -991,7 +1007,7 @@ app.get('/.well-known/jwks.json', (req: Request, res: Response) => {
+       "kid": "mcp-key-1",
+       "use": "sig",
+       "alg": "RS256",
+-      "n": "dummy_modulus_for_testing",
++      "n": "mcp_dummy_modulus_for_testing_web_claude_integration",
+       "e": "AQAB"
+     }]
+   });
+@@ -1004,35 +1020,43 @@ app.get('/.well-known/jwks.json', (req: Request, res: Response) => {
+ app.get('/', (req: Request, res: Response) => {
+   res.json({
+     name: "Web版Claude専用MCPサーバー",
+-    version: "4.0.0",
+-    description: "Laravel開発用ファイル操作サーバー（WebSocket対応）",
++    version: "5.0.0",
++    description: "Laravel開発用ファイル操作サーバー（公式仕様完全対応）",
++    protocol: "MCP 2025-03-26",
+     endpoints: {
+-      sse_main: "/mcp-streamable",
+-      sse_test: "/mcp-test"
++      sse: "/mcp-test",
++      oauth: {
++        discovery: "/.well-known/oauth-authorization-server",
++        authorize: "/authorize",
++        token: "/token",
++        register: "/register"
++      }
+     },
+-    features: ["Laravel構造分析", "ファイル操作", "コード検索"],
+-    optimizedFor: "Web版Claude",
+-    mcpVersion: "2024-11-05"
++    features: ["Laravel構造分析", "ファイル操作", "コード検索", "OAuth認証"],
++    optimizedFor: "Web版Claude（公式仕様対応）",
++    capabilities: ["tools", "prompts", "resources", "oauth", "sse"],
++    timestamp: new Date().toISOString()
+   });
+ });
+ 
+ app.get('/health', (req: Request, res: Response) => {
+-  const activeSessionList = Array.from(activeSessions.values()).filter((s: any) => s.isActive);
+-  const sseSessions = activeSessionList.filter(s => s.type === 'sse').length;
++  const activeSessionList = Array.from(activeSessions.values()).filter(s => s.isActive);
+ 
+   res.json({
+     status: 'OK',
+     server: 'Web版Claude専用MCPサーバー',
+-    version: '4.0.0',
++    version: '5.0.0',
++    protocol: 'MCP 2025-03-26',
+     uptime: process.uptime(),
+     timestamp: new Date().toISOString(),
+     activeSessions: {
+       total: activeSessionList.length,
+-      sse: sseSessions
+-    },
+-    endpoints: {
+-      sse_main: '/mcp-streamable',
+-      sse_test: '/mcp-test'
++      details: activeSessionList.map(s => ({
++        sessionId: s.sessionId.substring(0, 8),
++        endpoint: s.endpoint,
++        uptime: Date.now() - s.startTime.getTime(),
++        lastActivity: s.lastActivity
++      }))
+     },
+     capabilities: ['tools', 'oauth', 'sse'],
+     serverRoot: SERVER_ROOT,
+@@ -1044,29 +1068,28 @@ app.get('/sessions', (req: Request, res: Response) => {
+   const sessions = Array.from(activeSessions.values()).map(session => ({
+     sessionId: session.sessionId.substring(0, 8),
+     endpoint: session.endpoint,
+-    type: session.type,
+     startTime: session.startTime,
+     uptime: Date.now() - session.startTime.getTime(),
+-    isActive: session.isActive
++    lastActivity: session.lastActivity,
++    isActive: session.isActive,
++    clientInfo: session.clientInfo
+   }));
+ 
+   res.json({
+     totalSessions: sessions.length,
+     activeSessions: sessions.filter(s => s.isActive).length,
+-    sessionTypes: {
+-      sse: sessions.filter(s => s.type === 'sse').length
+-    },
+     sessions: sessions
+   });
+ });
+ 
+ // サーバー起動
+-server.listen(PORT, () => {
+-  console.log(`🚀 Web版Claude専用MCPサーバー起動 (v4.0.0)`);
++app.listen(PORT, () => {
++  console.log(`🚀 Web版Claude専用MCPサーバー起動 (v5.0.0)`);
+   console.log(`📡 ポート: ${PORT}`);
+   console.log(`📁 サーバールート: ${SERVER_ROOT}`);
+-  console.log(`🌐 SSEメインエンドポイント: https://mcp.ssl-shop.jp/mcp-streamable`);
+-  console.log(`🔍 SSEテストエンドポイント: https://mcp.ssl-shop.jp/mcp-test`);
++  console.log(`🎯 SSEエンドポイント: https://mcp.ssl-shop.jp/mcp-test`);
++  console.log(`🔐 OAuth Discovery: https://mcp.ssl-shop.jp/.well-known/oauth-authorization-server`);
+   console.log(`❤️ ヘルスチェック: https://mcp.ssl-shop.jp/health`);
+-  console.log(`✅ SSE統合サーバー起動完了`);
++  console.log(`📋 セッション管理: https://mcp.ssl-shop.jp/sessions`);
++  console.log(`✅ MCP 2025-03-26仕様対応サーバー起動完了`);
+ });
+\ No newline at end of file

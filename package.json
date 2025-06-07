@@ -1,26 +1,53 @@
 {
-  "name": "file-operations-mcp-server",
-  "version": "1.0.0",
-  "description": "ファイル操作を行うMCPサーバー",
+  "name": "hybrid-mcp-server",
+  "version": "11.0.4",
+  "description": "ハイブリッドMCPサーバー（Desktop版Claude stdio + HTTP リモート対応）",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsx src/index.ts"
+    "start:stdio": "MCP_MODE=stdio node dist/index.js",
+    "start:http": "MCP_MODE=http node dist/index.js --http",
+    "dev": "tsx src/index.ts",
+    "dev:stdio": "MCP_MODE=stdio tsx src/index.ts",
+    "dev:http": "MCP_MODE=http tsx src/index.ts --http",
+    "test": "echo \"No tests specified\" && exit 0",
+    "clean": "rm -rf dist",
+    "rebuild": "npm run clean && npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "dotenv": "^16.5.0",
+    "express": "^4.19.2",
+    "ws": "^8.18.0",
     "zod": "^3.25.56"
   },
   "devDependencies": {
     "@types/cors": "^2.8.18",
+    "@types/dotenv": "^6.1.1",
     "@types/express": "^5.0.2",
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.13",
     "tsx": "^4.0.0",
     "typescript": "^5.5.0"
   },
   "bin": {
-    "file-operations-mcp-server": "./dist/index.js"
+    "hybrid-mcp-server": "./dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "desktop-claude",
+    "stdio",
+    "http",
+    "remote",
+    "file-operations",
+    "hybrid"
+  ],
+  "author": "SSL Shop",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

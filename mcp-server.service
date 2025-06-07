@@ -1,10 +1,13 @@
 [Unit]
 Description=MCP File Operations Server
+Documentation=https://modelcontextprotocol.io
 After=network.target
+Wants=network.target
 
 [Service]
 Type=simple
-User=www-data
+User=web
+Group=web
 WorkingDirectory=/home/web/ssl-shop.jp/acme_shop/mcp-server
 Environment=NODE_ENV=production
 Environment=SERVER_ROOT=/home/web/ssl-shop.jp/acme_shop
@@ -12,6 +15,21 @@ Environment=PORT=3001
 ExecStart=/usr/bin/node dist/index.js
 Restart=always
 RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-server
+
+# セキュリティ設定
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/web/ssl-shop.jp/acme_shop/mcp-server
+ReadOnlyPaths=/home/web/ssl-shop.jp/acme_shop
+
+# リソース制限
+LimitNOFILE=65536
+LimitNPROC=4096
 
 [Install]
 WantedBy=multi-user.target
