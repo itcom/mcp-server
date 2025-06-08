@@ -16,7 +16,7 @@ import path from 'path';
 
 // 基本設定
 const SERVER_ROOT = process.env.SERVER_ROOT || process.cwd();
-const ALLOWED_EXTENSIONS = ['.php', '.js', '.ts', '.json', '.md', '.txt', '.env.example', '.yaml', '.yml', '.blade.php', '.service', '.conf', '.sh', '.xml'];
+const ALLOWED_EXTENSIONS = ['.php', '.js', '.ts', '.json', '.md', '.txt', '.env', '.env.example', '.yaml', '.yml', '.blade.php', '.service', '.conf', '.sh', '.xml'];
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001;
 const BASE_URL = process.env.BASE_URL || 'https://mcp.ssl-shop.jp';
 const ENDPOINT_PATH = process.env.ENDPOINT_PATH || '/sse';
@@ -35,7 +35,6 @@ const MODE = process.env.MCP_MODE || 'auto';
 const isHttpArgs = process.argv.includes('--http');
 const hasPortEnv = process.env.PORT;
 const isStdioMode = MODE === 'stdio' || (MODE === 'auto' && !hasPortEnv && !isHttpArgs);
-const isHttpMode = MODE === 'http' || isHttpArgs;
 
 // 簡素化されたセッション管理
 interface WebClaudeSession {
@@ -86,7 +85,17 @@ function sanitizePath(filePath: string): string {
 }
 
 function isAllowedFile(filePath: string): boolean {
+  const fileName = path.basename(filePath).toLowerCase();
   const ext = path.extname(filePath).toLowerCase();
+  
+  // 複合拡張子のチェック（例：.env.example）
+  for (const allowedExt of ALLOWED_EXTENSIONS) {
+    if (fileName.endsWith(allowedExt.toLowerCase())) {
+      return true;
+    }
+  }
+  
+  // 通常の拡張子チェック
   return ALLOWED_EXTENSIONS.includes(ext) || ext === '';
 }
 
