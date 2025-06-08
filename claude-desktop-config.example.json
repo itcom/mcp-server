@@ -1,13 +1,36 @@
 {
   "mcpServers": {
-    "remote-laravel-files": {
-      "command": "ssh",
+    "local-project-files": {
+      "command": "/Users/[ユーザー名]/Library/Application Support/Herd/config/nvm/versions/node/v22.15.0/bin/node",
       "args": [
-        "your-user@your-server.com",
-        "cd /home/web/ssl-shop.jp/acme_shop/mcp-server && npm start"
+        "/path/to/mcp-server/dist/index.js"
       ],
       "env": {
-        "NODE_ENV": "production"
+        "SERVER_ROOT": "/path/to/your/project",
+        "MCP_MODE": "stdio",
+        "PROJECT_ID": "myproject"
+      }
+    },
+    "mcp-server-files": {
+      "command": "/Users/[ユーザー名]/Library/Application Support/Herd/config/nvm/versions/node/v22.15.0/bin/node",
+      "args": [
+        "/path/to/mcp-server/dist/index.js"
+      ],
+      "env": {
+        "SERVER_ROOT": "/path/to/mcp-server",
+        "MCP_MODE": "stdio",
+        "PROJECT_ID": "mcp"
+      }
+    },
+    "remote-server-files": {
+      "command": "/Users/[ユーザー名]/Library/Application Support/Herd/config/nvm/versions/node/v22.15.0/bin/npx",
+      "args": [
+        "mcp-remote",
+        "https://your-server.com/sse"
+      ],
+      "env": {
+        "PATH": "/Users/[ユーザー名]/Library/Application Support/Herd/config/nvm/versions/node/v22.15.0/bin:/usr/local/bin:/usr/bin:/bin",
+        "NODE_PATH": "/Users/[ユーザー名]/Library/Application Support/Herd/config/nvm/versions/node/v22.15.0/lib/node_modules"
       }
     }
   }

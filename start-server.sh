@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /home/web/ssl-shop.jp/acme_shop/mcp-server
+cd /var/www/project/mcp-server
 
 # 環境変数の読み込み
 source .env

@@ -1,6 +1,6 @@
 [Unit]
 Description=MCP File Operations Server
-Documentation=https://modelcontextprotocol.io
+Documentation=https://github.com/itcomllc/mcp-server
 After=network.target
 Wants=network.target
 
@@ -8,9 +8,9 @@ Wants=network.target
 Type=simple
 User=web
 Group=web
-WorkingDirectory=/home/web/ssl-shop.jp/acme_shop/mcp-server
+WorkingDirectory=/var/www/project/mcp-server
 Environment=NODE_ENV=production
-Environment=SERVER_ROOT=/home/web/ssl-shop.jp/acme_shop
+Environment=SERVER_ROOT=/var/www/project
 Environment=PORT=3001
 ExecStart=/usr/bin/node dist/index.js
 Restart=always
@@ -23,9 +23,9 @@ SyslogIdentifier=mcp-server
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/home/web/ssl-shop.jp/acme_shop/mcp-server
-ReadOnlyPaths=/home/web/ssl-shop.jp/acme_shop
+ProtectHome=false
+ReadWritePaths=/var/www/project/mcp-server
+ReadOnlyPaths=/var/www/project
 
 # リソース制限
 LimitNOFILE=65536
