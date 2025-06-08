@@ -4,112 +4,420 @@ A powerful Model Context Protocol (MCP) server built with Express.js that provid
 
 ## 🚀 Features
 
-- **Universal Compatibility**: Works with both Claude Desktop and Web Claude
-- **GitHub Specification Compliant**: Follows official GitHub MCP server timing and protocol standards
-- **Web Claude Optimization**: Special handling for Web Claude's 9-second timeout limitations
-- **OAuth Integration**: Full OAuth 2.0 flow for secure Web Claude connections
+- **Automatic Operation Mode Detection**: Auto-selects stdio/HTTP mode based on environment
+- **Multiple Project Support**: Tool namespace isolation with PROJECT_ID
 - **File Operations**: Comprehensive file system access with security controls
 - **Laravel Project Support**: Built-in Laravel project structure analysis
 - **Real-time Updates**: SSE (Server-Sent Events) for real-time communication
-- **Configurable Endpoints**: Environment-based endpoint configuration
-- **Session Management**: Advanced session tracking and cleanup
+- **OAuth Integration**: Complete OAuth 2.0 flow for Web Claude connections
 
 ## 📋 Requirements
 
-- **Node.js**: v18.0.0 or higher
+- **Node.js**: v18.0.0 or higher (tested with v22.15.0)
 - **npm**: Latest version
 - **TypeScript**: v5.5.0 or higher
 
-## 🛠️ Installation
+## ⚙️ Configuration Methods
 
-### Quick Setup
+This server supports **2 configuration methods**:
 
-```bash
-# Clone the repository
-git clone <your-repo-url>
-cd mcp-file-operations-server
-
-# Install dependencies
-npm install
-
-# Create environment configuration
-cp .env.example .env
-
-# Build the project
-npm run build
-
-# Start the server
-npm start
-```
-
-### Development Setup
+### 1. Environment Variables
 
 ```bash
-# Install dependencies
-npm install
+# Direct environment variable specification
+SERVER_ROOT=/path/to/project PROJECT_ID=myproject PORT=3001 node dist/index.js
 
-# Start in development mode with auto-reload
-npm run dev
+# systemd service configuration example
+Environment=SERVER_ROOT=/var/www/project
+Environment=PROJECT_ID=production
+Environment=PORT=3001
 ```
 
-## ⚙️ Configuration
+### 2. .env File Configuration
 
-Create a `.env` file in the root directory:
+Create a `.env` file in the project root:
 
-```env
-# Server Configuration
-BASE_URL=http://localhost:3001
-ENDPOINT_PATH=/mcp-test
+```bash
+# MCP Server Configuration
+
+# Operation mode (auto, stdio, http)
+MCP_MODE=auto
+
+# Project settings
+PROJECT_ID=myproject
+SERVER_ROOT=/var/www/project
+
+# HTTP mode settings
 PORT=3001
+BASE_URL=https://mcp.your-domain.com
+ENDPOINT_PATH=/sse
 
-# File System
-SERVER_ROOT=/path/to/your/project
+# Security settings
+ALLOWED_EXTENSIONS=.php,.js,.ts,.json,.md,.txt,.yaml,.yml,.blade.php,.service,.conf,.sh,.xml
 
-# Security (Optional)
-ALLOWED_EXTENSIONS=.php,.js,.ts,.json,.md,.txt,.yaml,.yml
+# Node.js environment
+NODE_ENV=production
 ```
 
-### Environment Variables
+### Configuration Priority
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `BASE_URL` | Base URL for the server | `http://localhost:3001` |
-| `ENDPOINT_PATH` | MCP endpoint path | `/mcp-test` |
-| `PORT` | Server port | `3001` |
-| `SERVER_ROOT` | Root directory for file operations | `process.cwd()` |
+1. **Environment Variables** (highest priority)
+2. **Claude Desktop config env settings**
+3. **.env file**
+4. **Default values**
 
-## 🎯 Usage
-
-### With Claude Desktop
-
-Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+### Claude Desktop Configuration Example
 
 ```json
 {
   "mcpServers": {
-    "file-operations": {
-      "command": "node",
+    "my-project": {
+      "command": "/path/to/node",
       "args": ["/path/to/mcp-server/dist/index.js"],
       "env": {
-        "SERVER_ROOT": "/path/to/your/project",
-        "PORT": "3001"
+        "SERVER_ROOT": "/path/to/project",
+        "MCP_MODE": "stdio",
+        "PROJECT_ID": "myproject"
       }
     }
   }
 }
 ```
 
-### With Web Claude
+In this case, Claude Desktop's `env` settings take highest priority, overriding `.env` file settings.
 
-1. Start the server locally or deploy to your server
-2. In Web Claude, go to **Integrations** → **Add Integration**
-3. Enter your server URL: `http://localhost:3001/mcp-test` (or your deployed URL)
-4. Complete the OAuth flow
-5. Start using the file operations tools!
+### Remote Server Configuration Examples
+
+**systemd service** (environment variables):
+```ini
+Environment=NODE_ENV=production
+Environment=SERVER_ROOT=/var/www/project
+Environment=PORT=3001
+Environment=PROJECT_ID=production
+```
+
+**Or .env file**:
+```bash
+NODE_ENV=production
+SERVER_ROOT=/var/www/project
+PORT=3001
+PROJECT_ID=production
+```
+
+## 🏗️ Operation Modes
+
+### Automatic Mode Detection Logic
+
+```typescript
+const MODE = process.env.MCP_MODE || 'auto';
+const isHttpArgs = process.argv.includes('--http');
+const hasPortEnv = process.env.PORT;
+const isStdioMode = MODE === 'stdio' || (MODE === 'auto' && !hasPortEnv && !isHttpArgs);
+```
+
+| Condition | Operation Mode | Use Case |
+|-----------|----------------|----------|
+| `MCP_MODE=stdio` | **stdio** | Desktop Claude (local development) |
+| `MCP_MODE=http` | **HTTP** | Remote server (production) |
+| `MCP_MODE=auto` + no `PORT` | **stdio** | Desktop Claude (auto-detection) |
+| `MCP_MODE=auto` + `PORT` exists | **HTTP** | Remote server (auto-detection) |
+| `--http` flag | **HTTP** | Command line specification |
+
+### stdio Mode (Local Development - Recommended)
+
+**Features**:
+- Best performance
+- No network overhead
+- Desktop Claude exclusive
+- Direct process communication
+- Claude Desktop automatically starts and manages processes
+
+**Test Method** (for verification):
+```bash
+# Build verification
+npm run build
+
+# Operation test (exit immediately with Ctrl+C)
+node dist/index.js
+# Expected output: "Desktop Claude MCP Server started"
+```
+
+### HTTP Mode (Remote Server)
+
+**Features**:
+- Web Claude compatible
+- Remote access capable
+- OAuth authentication support
+- SSL support via Nginx
+
+**Startup Methods**:
+```bash
+# Environment variable specification
+PORT=3001 node dist/index.js
+
+# Explicit specification
+MCP_MODE=http PORT=3001 node dist/index.js
+```
+
+## 🛠️ Installation
+
+### Local Development (stdio mode)
+
+```bash
+# Clone repository
+git clone <your-repo-url>
+cd mcp-server
+
+# Install dependencies
+npm install
+
+# Build project
+npm run build
+
+# Test stdio mode
+node dist/index.js
+# Output: "Desktop Claude MCP Server started"
+```
+
+### Remote Server (HTTP mode)
+
+```bash
+# Install dependencies
+npm install
+
+# Build project
+npm run build
+
+# Start in HTTP mode
+PORT=3001 npm start
+# Output: "HTTPサーバー起動完了 (Port: 3001)"
+```
+
+## 🎯 Usage
+
+### With Claude Desktop (stdio mode)
+
+Add to Claude Desktop configuration file:
+
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "local-project-files": {
+      "command": "/Users/[USERNAME]/Library/Application Support/Herd/config/nvm/versions/node/v22.15.0/bin/node",
+      "args": [
+        "/path/to/mcp-server/dist/index.js"
+      ],
+      "env": {
+        "SERVER_ROOT": "/path/to/your/project",
+        "MCP_MODE": "stdio",
+        "PROJECT_ID": "myproject"
+      }
+    },
+    "mcp-server-files": {
+      "command": "/Users/[USERNAME]/Library/Application Support/Herd/config/nvm/versions/node/v22.15.0/bin/node",
+      "args": [
+        "/path/to/mcp-server/dist/index.js"
+      ],
+      "env": {
+        "SERVER_ROOT": "/path/to/mcp-server",
+        "MCP_MODE": "stdio",
+        "PROJECT_ID": "mcp"
+      }
+    }
+  }
+}
+```
+
+### With Claude Desktop (Remote HTTP mode)
+
+```json
+{
+  "mcpServers": {
+    "remote-server-files": {
+      "command": "/Users/[USERNAME]/Library/Application Support/Herd/config/nvm/versions/node/v22.15.0/bin/npx",
+      "args": [
+        "mcp-remote",
+        "https://your-server.com/sse"
+      ],
+      "env": {
+        "PATH": "/Users/[USERNAME]/Library/Application Support/Herd/config/nvm/versions/node/v22.15.0/bin:/usr/local/bin:/usr/bin:/bin",
+        "NODE_PATH": "/Users/[USERNAME]/Library/Application Support/Herd/config/nvm/versions/node/v22.15.0/lib/node_modules"
+      }
+    }
+  }
+}
+```
+
+### Important Notes for Multiple Project Management
+
+**PROJECT_ID is required**:
+- Set different `PROJECT_ID` for each project
+- Prevents tool name conflicts (e.g., `projecta_list_files`, `projectb_list_files`)
+- Auto-generated from directory name if not set
+
+### Finding Your Node.js Path
+
+```bash
+# Find Node.js installation path
+which node
+
+# If using nvm (Node Version Manager)
+nvm which current
+
+# Example outputs:
+# /Users/username/Library/Application Support/Herd/config/nvm/versions/node/v22.15.0/bin/node
+# /usr/local/bin/node
+# /opt/homebrew/bin/node
+```
+
+## 🚀 Production Remote Server Setup
+
+### systemd Service Configuration
+
+`/etc/systemd/system/mcp-server.service`:
+
+```ini
+[Unit]
+Description=MCP File Operations Server
+Documentation=https://github.com/itcomllc/mcp-server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=web
+Group=web
+WorkingDirectory=/var/www/project/mcp-server
+Environment=NODE_ENV=production
+Environment=SERVER_ROOT=/var/www/project
+Environment=PORT=3001
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-server
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/var/www/project/mcp-server
+ReadOnlyPaths=/var/www/project
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Nginx Configuration
+
+`/etc/nginx/sites-available/mcp-server`:
+
+```nginx
+server {
+    listen 80;
+    listen 443 ssl http2;
+    server_name mcp.your-domain.com;
+
+    root /var/www/project/mcp-server;
+
+    # SSL configuration
+    ssl_certificate     /etc/letsencrypt/live/mcp.your-domain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/mcp.your-domain.com/privkey.pem;
+
+    # SSL optimization
+    ssl_protocols TLSv1.3 TLSv1.2;
+    ssl_ciphers 'ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:!DSS:!3DES:!RC4:!aNULL:!eNULL:!MD5:!SHA1:!EXP:!PSK:!SRP';
+    ssl_ecdh_curve prime256v1;
+    ssl_prefer_server_ciphers on;
+
+    # MCP SSE endpoint
+    location /sse {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Connection '';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # SSE specific settings
+        proxy_cache off;
+        proxy_buffering off;
+        chunked_transfer_encoding off;
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 75s;
+    }
+
+    # OAuth endpoints
+    location ~ ^/(\.well-known/oauth-authorization-server|authorize|token|register) {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Health check endpoint
+    location /health {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Short timeout for health checks
+        proxy_read_timeout 10s;
+        proxy_send_timeout 10s;
+        proxy_connect_timeout 5s;
+    }
+
+    # Security headers
+    add_header X-Frame-Options DENY;
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection "1; mode=block";
+}
+```
+
+### Deployment Steps
+
+```bash
+# 1. Prepare code on server
+git clone <your-repo-url> /var/www/project/mcp-server
+cd /var/www/project/mcp-server
+npm install
+npm run build
+
+# 2. Enable systemd service
+sudo systemctl enable mcp-server
+sudo systemctl start mcp-server
+sudo systemctl status mcp-server
+
+# 3. Enable Nginx configuration
+sudo ln -s /etc/nginx/sites-available/mcp-server /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+
+# 4. Obtain SSL certificate (Let's Encrypt)
+sudo certbot --nginx -d mcp.your-domain.com
+
+# 5. Verify operation
+curl https://mcp.your-domain.com/health
+```
 
 ## 🔧 Available Tools
 
-### `list_files`
+All tools are automatically prefixed with your `PROJECT_ID`:
+
+### `[PROJECT_ID]_list_files`
 List files and directories with filtering options.
 
 ```json
@@ -121,7 +429,7 @@ List files and directories with filtering options.
 }
 ```
 
-### `read_file`
+### `[PROJECT_ID]_read_file`
 Read file contents with encoding support.
 
 ```json
@@ -131,7 +439,7 @@ Read file contents with encoding support.
 }
 ```
 
-### `get_laravel_structure`
+### `[PROJECT_ID]_get_laravel_structure`
 Analyze Laravel project structure and get statistics.
 
 ```json
@@ -141,137 +449,117 @@ Analyze Laravel project structure and get statistics.
 }
 ```
 
-### `search_files`
+### `[PROJECT_ID]_search_files`
 Search files with pattern matching and content search.
 
 ```json
 {
   "directory": ".",
-  "pattern": "Controller", 
+  "pattern": "Controller",
   "content_search": "function",
   "file_extension": ".php"
 }
 ```
 
-### `get_server_info`
+### `[PROJECT_ID]_get_server_info`
 Get server status and configuration information.
 
 ```json
 {}
 ```
 
-## 🏗️ Architecture
+## ⚙️ Environment Variables
 
-### Core Components
-
-- **Express.js Server**: Main HTTP server with CORS and middleware support
-- **SSE Handler**: Server-Sent Events for real-time communication
-- **OAuth Provider**: Complete OAuth 2.0 implementation for Web Claude
-- **Session Manager**: Advanced session tracking and cleanup
-- **Protocol Manager**: Dynamic MCP protocol version handling
-- **File System Security**: Path sanitization and file type validation
-
-### GitHub Specification Compliance
-
-This server follows GitHub's official MCP server specifications:
-
-- ✅ **500ms Initialization Timing**: Matches GitHub's official initialization delay
-- ✅ **Dual Heartbeat Strategy**: 30-second GitHub-compliant + 8-second Web Claude optimization
-- ✅ **Protocol Version 2024-11-05**: Fixed to GitHub's standard protocol version
-- ✅ **Proper SSE Headers**: GitHub-compliant Server-Sent Events configuration
-
-## 🚀 Deployment
-
-### Local Development
-
-```bash
-npm run dev
-```
-
-### Production
-
-```bash
-# Build the project
-npm run build
-
-# Start with PM2 (recommended)
-pm2 start dist/index.js --name mcp-server
-
-# Or start directly
-npm start
-```
-
-### Docker (Optional)
-
-```dockerfile
-FROM node:18-alpine
-
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
-
-COPY dist ./dist
-COPY .env ./
-
-EXPOSE 3001
-CMD ["npm", "start"]
-```
-
-## 🔒 Security Features
-
-- **Path Sanitization**: Prevents directory traversal attacks
-- **File Type Restrictions**: Configurable allowed file extensions
-- **CORS Protection**: Proper cross-origin resource sharing configuration
-- **Session Management**: Automatic cleanup of inactive sessions
-- **OAuth Security**: Secure token-based authentication for Web Claude
+| Variable | Description | Default | stdio | HTTP |
+|----------|-------------|---------|-------|------|
+| `MCP_MODE` | Operation mode: auto/stdio/http | `auto` | ✅ | ✅ |
+| `PROJECT_ID` | Tool namespace identifier | auto-generated | ✅ | ✅ |
+| `SERVER_ROOT` | Root directory for file operations | `process.cwd()` | ✅ | ✅ |
+| `PORT` | HTTP server port | none | ❌ | ✅ |
+| `BASE_URL` | Base URL for HTTP mode | `http://localhost:3001` | ❌ | ✅ |
+| `ENDPOINT_PATH` | MCP endpoint path | `/sse` | ❌ | ✅ |
 
 ## 🐛 Troubleshooting
 
+### Operation Mode Verification
+
+```bash
+# stdio mode verification
+node dist/index.js
+# Output: "Desktop Claude MCP Server started"
+
+# HTTP mode verification
+PORT=3001 node dist/index.js
+# Output: "HTTPサーバー起動完了 (Port: 3001)"
+```
+
 ### Common Issues
 
-**Port already in use**
+**Node.js path not found**:
 ```bash
-# Find and kill the process using port 3001
-lsof -ti:3001 | xargs kill -9
+which node
+nvm which current
 ```
 
-**File access denied**
-- Check `SERVER_ROOT` path in `.env`
-- Verify file permissions
-- Ensure the path exists and is readable
+**PROJECT_ID conflicts**:
+- Set different PROJECT_ID for each project
+- Same PROJECT_ID causes tool name conflicts
 
-**Web Claude connection timeout**
-- Verify OAuth endpoints are accessible
-- Check firewall settings
-- Ensure SSL/HTTPS configuration if deployed
-
-**Claude Desktop not detecting server**
-- Verify the path in `claude_desktop_config.json`
-- Check that the built `dist/index.js` file exists
-- Restart Claude Desktop after configuration changes
-
-## 📚 API Reference
-
-### Health Check
-```http
-GET /health
+**systemd service won't start**:
+```bash
+sudo systemctl status mcp-server
+sudo journalctl -u mcp-server -f
 ```
 
-Returns server status and active sessions.
-
-### OAuth Endpoints
-```http
-GET /.well-known/oauth-authorization-server
-GET /authorize
-POST /token
-GET /.well-known/jwks.json
+**Nginx configuration errors**:
+```bash
+sudo nginx -t
+sudo tail -f /var/log/nginx/error.log
 ```
 
-### MCP Endpoint
-```http
-GET /mcp-test    # SSE connection for real-time communication
-POST /mcp-test   # JSON-RPC tool execution
+## 📚 Configuration Templates
+
+### claude-desktop-config.json (Complete)
+
+```json
+{
+  "mcpServers": {
+    "local-project-a": {
+      "command": "/path/to/node",
+      "args": ["/path/to/mcp-server/dist/index.js"],
+      "env": {
+        "SERVER_ROOT": "/path/to/project-a",
+        "MCP_MODE": "stdio",
+        "PROJECT_ID": "projecta"
+      }
+    },
+    "local-project-b": {
+      "command": "/path/to/node",
+      "args": ["/path/to/mcp-server/dist/index.js"],
+      "env": {
+        "SERVER_ROOT": "/path/to/project-b",
+        "MCP_MODE": "stdio",
+        "PROJECT_ID": "projectb"
+      }
+    },
+    "remote-production": {
+      "command": "/path/to/npx",
+      "args": ["mcp-remote", "https://mcp.your-domain.com/sse"],
+      "env": {
+        "PATH": "/path/to/node/bin:/usr/local/bin:/usr/bin:/bin"
+      }
+    }
+  }
+}
 ```
+
+## 💡 Best Practices
+
+1. **Use stdio mode for local development** - Best performance
+2. **Use HTTP mode for production** - Nginx + systemd + SSL
+3. **Namespace separation with PROJECT_ID** - Prevent tool name conflicts
+4. **Mode control with environment variables** - Explicit specification with `MCP_MODE`
+5. **Security settings** - systemd restrictions and Nginx headers
 
 ## 🤝 Contributing
 
@@ -288,17 +576,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🙏 Acknowledgments
 
 - [Anthropic](https://anthropic.com) for the Model Context Protocol specification
-- [GitHub MCP Server](https://github.com/github/github-mcp-server) for specification compliance reference
+- [Cloudflare](https://developers.cloudflare.com/agents/) for MCP implementation guidance
 - The MCP community for protocol development and best practices
-
-## 📞 Support
-
-If you encounter any issues or have questions:
-
-1. Check the [Troubleshooting](#-troubleshooting) section
-2. Search existing [Issues](../../issues)
-3. Create a new issue with detailed information
 
 ---
 
-**Made with ❤️ for the MCP community**
+**Seamless MCP experience from local development to remote production!**
