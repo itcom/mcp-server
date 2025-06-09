@@ -1,4 +1,4 @@
-// ハイブリッドMCPサーバー - stdio（Desktop版Claude）+ HTTP（Web版Claude対応）
+// ハイブリッドMCPサーバー - stdio（Desktop版Claude）+ HTTP（Web版Claude対応）+ Git機能
 import { config } from 'dotenv';
 config();
 
@@ -13,6 +13,10 @@ import express, { Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
 import fs from 'fs/promises';
 import path from 'path';
+import { spawn, exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 // 基本設定
 const SERVER_ROOT = process.env.SERVER_ROOT || process.cwd();
@@ -75,6 +79,71 @@ function isWebClaudeClient(userAgent: string): boolean {
     userAgent.includes('anthropic');
 }
 
+// Git操作のヘルパー関数（サブディレクトリ対応版）
+async function executeGitCommand(command: string, args: string[] = [], workingDir?: string): Promise<{ stdout: string; stderr: string }> {
+  try {
+    const cwd = workingDir ? path.resolve(SERVER_ROOT, workingDir) : SERVER_ROOT;
+    const { stdout, stderr } = await execAsync(`git ${command} ${args.join(' ')}`, {
+      cwd,
+      maxBuffer: 1024 * 1024 * 10 // 10MB buffer
+    });
+    return { stdout, stderr };
+  } catch (error: any) {
+    throw new Error(`Git command failed: ${error.message}`);
+  }
+}
+
+// Gitリポジトリの存在チェック（ディレクトリ指定対応）
+async function isGitRepository(workingDir?: string): Promise<boolean> {
+  try {
+    await executeGitCommand('rev-parse', ['--git-dir'], workingDir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// AI用のコミットメッセージ生成
+async function generateCommitMessage(diffOutput: string): Promise<string> {
+  const lines = diffOutput.split('\n');
+  const changes: string[] = [];
+  const files: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith('diff --git')) {
+      const match = line.match(/diff --git a\/(.+) b\/(.+)/);
+      if (match) files.push(match[1]);
+    } else if (line.startsWith('+') && !line.startsWith('+++')) {
+      changes.push('ADD: ' + line.substring(1).trim());
+    } else if (line.startsWith('-') && !line.startsWith('---')) {
+      changes.push('DEL: ' + line.substring(1).trim());
+    }
+  }
+
+  // Laravel固有の変更パターンの検出
+  const isController = files.some(f => f.includes('Controller.php'));
+  const isModel = files.some(f => f.includes('Models/'));
+  const isMigration = files.some(f => f.includes('migrations/'));
+  const isView = files.some(f => f.includes('resources/views/'));
+  const isRoute = files.some(f => f.includes('routes/'));
+  const isConfig = files.some(f => f.includes('config/'));
+
+  let prefix = '';
+  if (isMigration) prefix = 'feat(db): ';
+  else if (isController) prefix = 'feat(api): ';
+  else if (isModel) prefix = 'feat(model): ';
+  else if (isView) prefix = 'feat(ui): ';
+  else if (isRoute) prefix = 'feat(route): ';
+  else if (isConfig) prefix = 'config: ';
+  else prefix = 'feat: ';
+
+  // 変更内容の分析
+  const summary = changes.slice(0, 3).join(', ').substring(0, 50);
+  const fileNames = files.slice(0, 2).map(f => path.basename(f)).join(', ');
+
+  return `${prefix}${fileNames} - ${summary}`;
+}
+
 // ファイルシステム操作関数
 function sanitizePath(filePath: string): string {
   const fullPath = path.resolve(SERVER_ROOT, filePath);
@@ -87,14 +156,14 @@ function sanitizePath(filePath: string): string {
 function isAllowedFile(filePath: string): boolean {
   const fileName = path.basename(filePath).toLowerCase();
   const ext = path.extname(filePath).toLowerCase();
-  
+
   // 複合拡張子のチェック（例：.env.example）
   for (const allowedExt of ALLOWED_EXTENSIONS) {
     if (fileName.endsWith(allowedExt.toLowerCase())) {
       return true;
     }
   }
-  
+
   // 通常の拡張子チェック
   return ALLOWED_EXTENSIONS.includes(ext) || ext === '';
 }
@@ -138,7 +207,7 @@ async function getFilesList(dir: string, recursive: boolean, includeHidden: bool
   return files;
 }
 
-// ツール実行関数（完全版に復元）
+// ツール実行関数（Git機能追加版）
 async function executeToolCall(toolName: string, toolArgs: any, logFunc: Function): Promise<any> {
   const startTime = Date.now();
   const safeArgs = toolArgs || {};
@@ -147,6 +216,183 @@ async function executeToolCall(toolName: string, toolArgs: any, logFunc: Functio
 
   try {
     switch (toolName) {
+      // ツール実行関数のGit関連部分（サブディレクトリ対応版）
+      case `${PROJECT_ID}_git_status`:
+      case 'git_status':
+        const statusDir = safeArgs?.directory;
+        if (!(await isGitRepository(statusDir))) {
+          throw new Error(`Not a git repository${statusDir ? ` in directory: ${statusDir}` : ''}`);
+        }
+
+        const { stdout: statusOutput } = await executeGitCommand('status', ['--porcelain', '-b'], statusDir);
+        const { stdout: statusLong } = await executeGitCommand('status', [], statusDir);
+
+        return {
+          content: [{
+            type: "text",
+            text: `🔍 【${PROJECT_ID}】Git ステータス${statusDir ? ` (${statusDir})` : ''}\n\n**簡潔表示:**\n${statusOutput}\n\n**詳細表示:**\n${statusLong}`
+          }]
+        };
+
+      case `${PROJECT_ID}_git_diff`:
+      case 'git_diff':
+        const diffDir = safeArgs?.directory;
+        if (!(await isGitRepository(diffDir))) {
+          throw new Error(`Not a git repository${diffDir ? ` in directory: ${diffDir}` : ''}`);
+        }
+
+        const staged = safeArgs?.staged || false;
+        const diffFilePath = safeArgs?.file_path;
+
+        let diffArgs = staged ? ['--cached'] : [];
+        if (diffFilePath) diffArgs.push(diffFilePath);
+
+        const { stdout: diffOutput } = await executeGitCommand('diff', diffArgs, diffDir);
+
+        return {
+          content: [{
+            type: "text",
+            text: `📊 【${PROJECT_ID}】Git 差分${staged ? ' (ステージング済み)' : ''}${diffDir ? ` (${diffDir})` : ''}\n${diffFilePath ? `📄 ファイル: ${diffFilePath}` : ''}\n\n\`\`\`diff\n${diffOutput}\n\`\`\``
+          }]
+        };
+
+      case `${PROJECT_ID}_git_log`:
+      case 'git_log':
+        const logDir = safeArgs?.directory;
+        if (!(await isGitRepository(logDir))) {
+          throw new Error(`Not a git repository${logDir ? ` in directory: ${logDir}` : ''}`);
+        }
+
+        const limit = safeArgs?.limit || 10;
+        const oneline = safeArgs?.oneline || false;
+        const author = safeArgs?.author;
+        const since = safeArgs?.since;
+
+        let logArgs = [`--max-count=${limit}`];
+        if (oneline) logArgs.push('--oneline');
+        else logArgs.push('--pretty=format:%h - %an, %ar : %s');
+        if (author) logArgs.push(`--author=${author}`);
+        if (since) logArgs.push(`--since=${since}`);
+
+        const { stdout: logOutput } = await executeGitCommand('log', logArgs, logDir);
+
+        return {
+          content: [{
+            type: "text",
+            text: `📚 【${PROJECT_ID}】Git ログ (${limit}件)${logDir ? ` (${logDir})` : ''}\n${author ? `👤 作成者: ${author}\n` : ''}${since ? `📅 期間: ${since}から\n` : ''}\n\n${logOutput}`
+          }]
+        };
+
+      case `${PROJECT_ID}_git_branch`:
+      case 'git_branch':
+        const branchDir = safeArgs?.directory;
+        if (!(await isGitRepository(branchDir))) {
+          throw new Error(`Not a git repository${branchDir ? ` in directory: ${branchDir}` : ''}`);
+        }
+
+        const { stdout: branchOutput } = await executeGitCommand('branch', ['-a'], branchDir);
+        const { stdout: currentBranch } = await executeGitCommand('branch', ['--show-current'], branchDir);
+
+        return {
+          content: [{
+            type: "text",
+            text: `🌿 【${PROJECT_ID}】Git ブランチ情報${branchDir ? ` (${branchDir})` : ''}\n\n**現在のブランチ:** ${currentBranch.trim()}\n\n**全ブランチ:**\n${branchOutput}`
+          }]
+        };
+
+      case `${PROJECT_ID}_git_show`:
+      case 'git_show':
+        const showDir = safeArgs?.directory;
+        if (!(await isGitRepository(showDir))) {
+          throw new Error(`Not a git repository${showDir ? ` in directory: ${showDir}` : ''}`);
+        }
+
+        const commitHash = safeArgs?.commit || 'HEAD';
+        const { stdout: showOutput } = await executeGitCommand('show', [commitHash], showDir);
+
+        return {
+          content: [{
+            type: "text",
+            text: `🔍 【${PROJECT_ID}】Git コミット詳細${showDir ? ` (${showDir})` : ''}\n📝 コミット: ${commitHash}\n\n\`\`\`\n${showOutput}\n\`\`\``
+          }]
+        };
+
+      case `${PROJECT_ID}_git_blame`:
+      case 'git_blame':
+        const blameDir = safeArgs?.directory;
+        if (!(await isGitRepository(blameDir))) {
+          throw new Error(`Not a git repository${blameDir ? ` in directory: ${blameDir}` : ''}`);
+        }
+
+        const blameFile = safeArgs?.file_path;
+        if (!blameFile) throw new Error('file_path is required for git blame');
+
+        const { stdout: blameOutput } = await executeGitCommand('blame', [blameFile], blameDir);
+
+        return {
+          content: [{
+            type: "text",
+            text: `👤 【${PROJECT_ID}】Git Blame${blameDir ? ` (${blameDir})` : ''}\n📄 ファイル: ${blameFile}\n\n\`\`\`\n${blameOutput}\n\`\`\``
+          }]
+        };
+
+      case `${PROJECT_ID}_git_generate_commit_message`:
+      case 'git_generate_commit_message':
+        const commitDir = safeArgs?.directory;
+        if (!(await isGitRepository(commitDir))) {
+          throw new Error(`Not a git repository${commitDir ? ` in directory: ${commitDir}` : ''}`);
+        }
+
+        const { stdout: diffForCommit } = await executeGitCommand('diff', ['--cached'], commitDir);
+        if (!diffForCommit.trim()) {
+          throw new Error('No staged changes found. Please stage changes first with "git add"');
+        }
+
+        const generatedMessage = await generateCommitMessage(diffForCommit);
+
+        return {
+          content: [{
+            type: "text",
+            text: `💡 【${PROJECT_ID}】AI生成コミットメッセージ${commitDir ? ` (${commitDir})` : ''}\n\n**推奨メッセージ:**\n\`${generatedMessage}\`\n\n**ステージされた変更の差分:**\n\`\`\`diff\n${diffForCommit.substring(0, 1000)}${diffForCommit.length > 1000 ? '\n... (truncated)' : ''}\n\`\`\``
+          }]
+        };
+
+      case `${PROJECT_ID}_git_commit_analyze`:
+      case 'git_commit_analyze':
+        const analyzeDir = safeArgs?.directory;
+        if (!(await isGitRepository(analyzeDir))) {
+          throw new Error(`Not a git repository${analyzeDir ? ` in directory: ${analyzeDir}` : ''}`);
+        }
+
+        const { stdout: statusForAnalyze } = await executeGitCommand('status', ['--porcelain'], analyzeDir);
+        const { stdout: diffForAnalyze } = await executeGitCommand('diff', ['--cached'], analyzeDir);
+
+        const lines = statusForAnalyze.split('\n').filter(line => line.trim());
+        const analysis = {
+          totalFiles: lines.length,
+          newFiles: lines.filter(line => line.startsWith('A')).length,
+          modifiedFiles: lines.filter(line => line.startsWith('M')).length,
+          deletedFiles: lines.filter(line => line.startsWith('D')).length,
+          renamedFiles: lines.filter(line => line.startsWith('R')).length,
+          suggestion: ''
+        };
+
+        if (analysis.totalFiles > 5) {
+          analysis.suggestion = '多数のファイルが変更されています。機能ごとに複数のコミットに分割することを検討してください。';
+        } else if (analysis.newFiles > 0 && analysis.modifiedFiles > 0) {
+          analysis.suggestion = '新規ファイルと既存ファイルの変更が混在しています。機能追加と修正を別々にコミットすることを検討してください。';
+        } else {
+          analysis.suggestion = '適切なサイズのコミットです。';
+        }
+
+        return {
+          content: [{
+            type: "text",
+            text: `📊 【${PROJECT_ID}】コミット分析${analyzeDir ? ` (${analyzeDir})` : ''}\n\n**統計:**\n- 総ファイル数: ${analysis.totalFiles}\n- 新規: ${analysis.newFiles}\n- 変更: ${analysis.modifiedFiles}\n- 削除: ${analysis.deletedFiles}\n- リネーム: ${analysis.renamedFiles}\n\n**推奨事項:**\n${analysis.suggestion}\n\n**変更されたファイル:**\n${statusForAnalyze}`
+          }]
+        };
+
+      // 既存のファイル操作ツール
       case `${PROJECT_ID}_list_files`:
       case 'list_files':
         const dir = sanitizePath(safeArgs?.directory || ".");
@@ -167,9 +413,9 @@ async function executeToolCall(toolName: string, toolArgs: any, logFunc: Functio
       case `${PROJECT_ID}_read_file`:
       case 'read_file':
         if (!safeArgs?.file_path) throw new Error("file_path is required");
-        const filePath = sanitizePath(safeArgs.file_path);
-        if (!isAllowedFile(filePath)) throw new Error('File type not allowed');
-        const content = await fs.readFile(filePath, safeArgs?.encoding || 'utf8');
+        const readFilePath = sanitizePath(safeArgs.file_path);
+        if (!isAllowedFile(readFilePath)) throw new Error('File type not allowed');
+        const content = await fs.readFile(readFilePath, safeArgs?.encoding || 'utf8');
 
         return {
           content: [{
@@ -403,26 +649,29 @@ async function executeToolCall(toolName: string, toolArgs: any, logFunc: Functio
           uptime: Math.round(process.uptime()),
           allowedExtensions: ALLOWED_EXTENSIONS,
           timestamp: new Date().toISOString(),
-          version: "12.0.0",
+          version: "13.0.0",
           protocol: isStdioMode ? "Desktop Claude Compatible" : "HTTP Remote Compatible",
           transport: isStdioMode ? "stdio" : "http",
           mode: MODE,
           activeSessions: webClaudeSessions.size,
+          gitRepository: await isGitRepository(),
           features: [
             "stdio",
-            "http", 
+            "http",
             "file-operations",
             "laravel-support",
             "session-management",
             "oauth-authentication",
-            "web-claude-optimized"
+            "web-claude-optimized",
+            "git-integration",
+            "ai-commit-messages"
           ]
         };
 
         return {
           content: [{
             type: "text",
-            text: `🖥️ 【${PROJECT_ID}】サーバー情報\n⚡ ${serverInfo.protocol}\n📡 プロトコル: ${serverInfo.transport}\n📊 アクティブセッション: ${serverInfo.activeSessions}個\n\n${JSON.stringify(serverInfo, null, 2)}`
+            text: `🖥️ 【${PROJECT_ID}】サーバー情報\n⚡ ${serverInfo.protocol}\n📡 プロトコル: ${serverInfo.transport}\n📊 アクティブセッション: ${serverInfo.activeSessions}個\n🔧 Git: ${serverInfo.gitRepository ? '✅' : '❌'}\n\n${JSON.stringify(serverInfo, null, 2)}`
           }]
         };
 
@@ -438,8 +687,100 @@ async function executeToolCall(toolName: string, toolArgs: any, logFunc: Functio
   }
 }
 
-// ツール定義（完全版に復元）
+// ツール定義（Git機能追加版）
 const TOOLS: Tool[] = [
+  // Git関連ツール
+  {
+    name: PROJECT_ID + "_git_status",
+    description: `【${PROJECT_ID}】Gitリポジトリの現在の状態を表示します`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Gitリポジトリのディレクトリパス（省略時はルート）' }
+      }
+    }
+  },
+  {
+    name: PROJECT_ID + "_git_diff",
+    description: `【${PROJECT_ID}】Git差分を表示します`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        staged: { type: 'boolean', default: false, description: 'ステージング済みの変更を表示' },
+        file_path: { type: 'string', description: '特定ファイルの差分を表示' },
+        directory: { type: 'string', description: 'Gitリポジトリのディレクトリパス（省略時はルート）' }
+      }
+    }
+  },
+  {
+    name: PROJECT_ID + "_git_log",
+    description: `【${PROJECT_ID}】Gitコミット履歴を表示します`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', default: 10, description: '表示件数' },
+        oneline: { type: 'boolean', default: false, description: '1行形式で表示' },
+        author: { type: 'string', description: '特定の作成者でフィルタ' },
+        since: { type: 'string', description: '期間指定 (例: "1 week ago")' },
+        directory: { type: 'string', description: 'Gitリポジトリのディレクトリパス（省略時はルート）' }
+      }
+    }
+  },
+  {
+    name: PROJECT_ID + "_git_branch",
+    description: `【${PROJECT_ID}】Gitブランチ情報を表示します`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Gitリポジトリのディレクトリパス（省略時はルート）' }
+      }
+    }
+  },
+  {
+    name: PROJECT_ID + "_git_show",
+    description: `【${PROJECT_ID}】特定のコミットの詳細を表示します`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        commit: { type: 'string', default: 'HEAD', description: 'コミットハッシュまたはHEAD' },
+        directory: { type: 'string', description: 'Gitリポジトリのディレクトリパス（省略時はルート）' }
+      }
+    }
+  },
+  {
+    name: PROJECT_ID + "_git_blame",
+    description: `【${PROJECT_ID}】ファイルの行ごとの変更履歴を表示します`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string', description: 'ファイルパス' },
+        directory: { type: 'string', description: 'Gitリポジトリのディレクトリパス（省略時はルート）' }
+      },
+      required: ['file_path']
+    }
+  },
+  {
+    name: PROJECT_ID + "_git_generate_commit_message",
+    description: `【${PROJECT_ID}】現在の変更内容からAIがコミットメッセージを生成します`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Gitリポジトリのディレクトリパス（省略時はルート）' }
+      }
+    }
+  },
+  {
+    name: PROJECT_ID + "_git_commit_analyze",
+    description: `【${PROJECT_ID}】現在の変更内容を分析してコミット分割を提案します`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', description: 'Gitリポジトリのディレクトリパス（省略時はルート）' }
+      }
+    }
+  },
+
+  // 既存のファイル操作ツール
   {
     name: PROJECT_ID + "_list_files",
     description: `【${PROJECT_ID}】ディレクトリ内のファイル一覧を取得します`,
@@ -534,8 +875,8 @@ async function handleMcpRequest(request: any): Promise<any> {
           },
           serverInfo: {
             name: SERVER_NAME,
-            version: "12.0.0",
-            description: "Web版Claude最適化版"
+            version: "13.0.0",
+            description: "Git機能付きMCPサーバー"
           }
         }
       };
@@ -597,7 +938,7 @@ async function handleMcpRequest(request: any): Promise<any> {
         result: {
           status: "pong",
           timestamp: new Date().toISOString(),
-          version: "12.0.0"
+          version: "13.0.0"
         }
       };
 
@@ -618,7 +959,7 @@ class DesktopClaudeMCPServer {
     this.server = new Server(
       {
         name: SERVER_NAME,
-        version: '12.0.0',
+        version: '13.0.0',
       },
       {
         capabilities: {
@@ -651,9 +992,10 @@ class DesktopClaudeMCPServer {
   async run() {
     const transport = new StdioServerTransport();
     logToStderr('Desktop Claude MCP Server started', {
-      version: '12.0.0',
+      version: '13.0.0',
       projectId: PROJECT_ID,
-      mode: 'stdio'
+      mode: 'stdio',
+      gitSupport: await isGitRepository()
     });
 
     await this.server.connect(transport);
@@ -697,7 +1039,7 @@ async function createHttpServer() {
   // GET /sse → SSE接続 + endpoint情報発行
   app.get(ENDPOINT_PATH, (req: Request, res: Response): void => {
     const sessionId = randomUUID();
-    
+
     // SSE接続確立
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -710,7 +1052,7 @@ async function createHttpServer() {
       'Access-Control-Max-Age': '86400',
       'X-Accel-Buffering': 'no'
     });
-    
+
     // セッション保存（SSE接続も保持）
     webClaudeSessions.set(sessionId, {
       id: sessionId,
@@ -722,7 +1064,7 @@ async function createHttpServer() {
 
     // Web版Claude用の特別なendpointイベント送信
     res.write(`event: endpoint\ndata: ${ENDPOINT_PATH}/message?sessionId=${sessionId}\n\n`);
-    
+
     // クリーンアップ処理
     req.on('close', () => {
       const session = webClaudeSessions.get(sessionId);
@@ -746,7 +1088,7 @@ async function createHttpServer() {
   // POST /sse/message → JSON-RPC通信（SSE経由でレスポンス）
   app.post(ENDPOINT_PATH + '/message', async (req: Request, res: Response): Promise<void> => {
     const sessionId = req.query.sessionId as string;
-    
+
     // セッション検証
     const session = webClaudeSessions.get(sessionId);
     if (!session || !session.active || !session.sseResponse) {
@@ -756,11 +1098,11 @@ async function createHttpServer() {
       });
       return;
     }
-    
+
     try {
       // MCP JSON-RPC処理
       const response = await handleMcpRequest(req.body);
-      
+
       // セッション活動更新
       session.lastActivity = Date.now();
       webClaudeSessions.set(sessionId, session);
@@ -780,9 +1122,9 @@ async function createHttpServer() {
       res.setHeader('Access-Control-Max-Age', '86400');
       res.send('Accepted');
 
-      logToStdout('Web版Claude JSON-RPC処理', { 
-        sessionId: sessionId.substring(0, 8), 
-        method: req.body?.method 
+      logToStdout('Web版Claude JSON-RPC処理', {
+        sessionId: sessionId.substring(0, 8),
+        method: req.body?.method
       });
 
     } catch (error) {
@@ -827,7 +1169,7 @@ async function createHttpServer() {
     }
 
     const authCode = `auth_${PROJECT_ID}_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-    
+
     try {
       const redirectUrl = new URL(redirect_uri as string);
       redirectUrl.searchParams.set('code', authCode);
@@ -872,16 +1214,17 @@ async function createHttpServer() {
   });
 
   // ヘルスチェック
-  app.get('/health', (req: Request, res: Response) => {
+  app.get('/health', async (req: Request, res: Response) => {
     res.json({
       status: 'OK',
-      server: 'ハイブリッドMCPサーバー',
-      version: '12.0.0',
+      server: 'Git機能付きMCPサーバー',
+      version: '13.0.0',
       projectId: PROJECT_ID,
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
       activeSessions: webClaudeSessions.size,
-      capabilities: ['stdio', 'http', 'web-claude-optimized']
+      gitRepository: await isGitRepository(),
+      capabilities: ['stdio', 'http', 'web-claude-optimized', 'git-integration', 'ai-commit-messages']
     });
   });
 
@@ -892,16 +1235,16 @@ async function createHttpServer() {
 async function main() {
   try {
     if (isStdioMode) {
-      console.error('[2025-06-09] Starting Desktop Claude stdio mode...');
+      console.error('[2025-06-09] Starting Desktop Claude stdio mode with Git support...');
       const server = new DesktopClaudeMCPServer();
       await server.run();
     } else {
-      console.log('[2025-06-09] Starting HTTP remote mode...');
+      console.log('[2025-06-09] Starting HTTP remote mode with Git support...');
       const app = await createHttpServer();
       const actualPort = PORT;
 
       app.listen(actualPort, () => {
-        logToStdout(`🚀 ハイブリッドMCPサーバー起動 (HTTP Mode)`);
+        logToStdout(`🚀 Git機能付きMCPサーバー起動 (HTTP Mode)`);
         logToStdout(`📡 Web版Claude: ${BASE_URL}${ENDPOINT_PATH}`);
         logToStdout(`❤️ ヘルスチェック: ${BASE_URL}/health`);
         logToStdout(`✅ HTTPサーバー起動完了 (Port: ${actualPort})`);

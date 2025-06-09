@@ -1,7 +1,7 @@
 {
   "name": "hybrid-mcp-server",
-  "version": "11.0.4",
-  "description": "ハイブリッドMCPサーバー（Desktop版Claude stdio + HTTP リモート対応）",
+  "version": "13.0.0",
+  "description": "ハイブリッドMCPサーバー（Desktop版Claude stdio + HTTP リモート対応 + Git機能）",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -43,7 +43,10 @@
     "http",
     "remote",
     "file-operations",
-    "hybrid"
+    "hybrid",
+    "git",
+    "laravel",
+    "ai-commit-messages"
   ],
   "author": "SSL Shop",
   "license": "MIT",
