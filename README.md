@@ -10,12 +10,16 @@ A powerful Model Context Protocol (MCP) server built with Express.js that provid
 - **Laravel Project Support**: Built-in Laravel project structure analysis
 - **Real-time Updates**: SSE (Server-Sent Events) for real-time communication
 - **OAuth Integration**: Complete OAuth 2.0 flow for Web Claude connections
+- **Git Integration**: Comprehensive Git operations with AI-powered commit message generation
+- **Subdirectory Git Support**: Manage nested Git repositories independently
+- **Laravel-Optimized Commit Messages**: AI generates Laravel-specific commit formats
 
 ## 📋 Requirements
 
 - **Node.js**: v18.0.0 or higher (tested with v22.15.0)
 - **npm**: Latest version
 - **TypeScript**: v5.5.0 or higher
+- **Git**: Version control system (for Git integration features)
 
 ## ⚙️ Configuration Methods
 
@@ -417,7 +421,9 @@ curl https://mcp.your-domain.com/health
 
 All tools are automatically prefixed with your `PROJECT_ID`:
 
-### `[PROJECT_ID]_list_files`
+### File Operations
+
+#### `[PROJECT_ID]_list_files`
 List files and directories with filtering options.
 
 ```json
@@ -429,7 +435,7 @@ List files and directories with filtering options.
 }
 ```
 
-### `[PROJECT_ID]_read_file`
+#### `[PROJECT_ID]_read_file`
 Read file contents with encoding support.
 
 ```json
@@ -439,7 +445,7 @@ Read file contents with encoding support.
 }
 ```
 
-### `[PROJECT_ID]_get_laravel_structure`
+#### `[PROJECT_ID]_get_laravel_structure`
 Analyze Laravel project structure and get statistics.
 
 ```json
@@ -449,7 +455,7 @@ Analyze Laravel project structure and get statistics.
 }
 ```
 
-### `[PROJECT_ID]_search_files`
+#### `[PROJECT_ID]_search_files`
 Search files with pattern matching and content search.
 
 ```json
@@ -461,12 +467,166 @@ Search files with pattern matching and content search.
 }
 ```
 
-### `[PROJECT_ID]_get_server_info`
+#### `[PROJECT_ID]_get_server_info`
 Get server status and configuration information.
 
 ```json
 {}
 ```
+
+### Git Operations
+
+#### `[PROJECT_ID]_git_status`
+Display current Git repository status.
+
+```json
+{
+  "directory": "subdirectory-name"  // optional: for subdirectory Git repos
+}
+```
+
+#### `[PROJECT_ID]_git_diff`
+Show Git diff with staging support.
+
+```json
+{
+  "staged": false,                  // show staged changes if true
+  "file_path": "specific/file.php", // optional: specific file diff
+  "directory": "subdirectory-name"  // optional: for subdirectory Git repos
+}
+```
+
+#### `[PROJECT_ID]_git_log`
+Display Git commit history with filtering.
+
+```json
+{
+  "limit": 10,                     // number of commits to show
+  "oneline": false,                // compact one-line format
+  "author": "john@example.com",    // filter by author
+  "since": "1 week ago",           // time period filter
+  "directory": "subdirectory-name" // optional: for subdirectory Git repos
+}
+```
+
+#### `[PROJECT_ID]_git_branch`
+Show Git branch information.
+
+```json
+{
+  "directory": "subdirectory-name"  // optional: for subdirectory Git repos
+}
+```
+
+#### `[PROJECT_ID]_git_show`
+Display detailed commit information.
+
+```json
+{
+  "commit": "HEAD",                // commit hash or reference
+  "directory": "subdirectory-name" // optional: for subdirectory Git repos
+}
+```
+
+#### `[PROJECT_ID]_git_blame`
+Show line-by-line change history for a file.
+
+```json
+{
+  "file_path": "app/Models/User.php", // required: file to analyze
+  "directory": "subdirectory-name"    // optional: for subdirectory Git repos
+}
+```
+
+#### `[PROJECT_ID]_git_generate_commit_message`
+AI-powered commit message generation for Laravel projects.
+
+```json
+{
+  "directory": "subdirectory-name"  // optional: for subdirectory Git repos
+}
+```
+
+**Features:**
+- Analyzes staged changes automatically
+- Recognizes Laravel file patterns (Controllers, Models, Migrations, Views, Routes)
+- Generates appropriate commit prefixes: `feat(api):`, `feat(db):`, `feat(ui):`, `config:`
+- Provides meaningful commit messages based on actual code changes
+
+**Example Generated Messages:**
+- `feat(api): UserController - ADD: role validation method`
+- `feat(db): create_users_table - ADD: role_id column`
+- `feat(ui): dashboard.blade.php - ADD: user statistics widget`
+
+#### `[PROJECT_ID]_git_commit_analyze`
+Analyze changes and suggest commit splitting strategies.
+
+```json
+{
+  "directory": "subdirectory-name"  // optional: for subdirectory Git repos
+}
+```
+
+**Analysis Features:**
+- File change statistics (new, modified, deleted, renamed)
+- Commit size recommendations
+- Suggestions for splitting large commits
+- Laravel-specific pattern recognition
+
+## 🔄 Git Workflow Integration
+
+### Typical Development Workflow
+
+```bash
+# 1. Check current repository status
+# [PROJECT_ID]_git_status
+
+# 2. Review changes before staging
+# [PROJECT_ID]_git_diff
+
+# 3. Stage files manually
+git add app/Http/Controllers/UserController.php
+
+# 4. Generate AI commit message
+# [PROJECT_ID]_git_generate_commit_message
+
+# 5. Commit with generated message
+git commit -m "feat(api): UserController - ADD: role validation method"
+```
+
+### Subdirectory Git Management
+
+For projects with nested Git repositories (e.g., main project + MCP server):
+
+```bash
+# Main project operations
+# [PROJECT_ID]_git_status
+
+# Subdirectory operations
+# [PROJECT_ID]_git_status({directory: "mcp-server"})
+# [PROJECT_ID]_git_diff({directory: "mcp-server"})
+# [PROJECT_ID]_git_generate_commit_message({directory: "mcp-server"})
+```
+
+### Laravel-Optimized Commit Messages
+
+The AI analyzes your Laravel project structure and generates appropriate commit messages:
+
+| File Type | Generated Prefix | Example |
+|-----------|------------------|---------|
+| Controllers | `feat(api):` | `feat(api): UserController - ADD: authentication method` |
+| Models | `feat(model):` | `feat(model): User.php - ADD: hasRoles relationship` |
+| Migrations | `feat(db):` | `feat(db): create_users_table - ADD: role_id column` |
+| Views | `feat(ui):` | `feat(ui): dashboard.blade.php - ADD: statistics widget` |
+| Routes | `feat(route):` | `feat(route): api.php - ADD: user management endpoints` |
+| Config | `config:` | `config: app.php - UPDATE: timezone to Asia/Tokyo` |
+
+### Commit Analysis and Optimization
+
+Use `git_commit_analyze` to optimize your commits:
+- **Large commits**: Suggests splitting by functionality
+- **Mixed changes**: Recommends separating new features from bug fixes
+- **Laravel patterns**: Recognizes framework-specific file types
 
 ## ⚙️ Environment Variables
 
@@ -478,6 +638,7 @@ Get server status and configuration information.
 | `PORT` | HTTP server port | none | ❌ | ✅ |
 | `BASE_URL` | Base URL for HTTP mode | `http://localhost:3001` | ❌ | ✅ |
 | `ENDPOINT_PATH` | MCP endpoint path | `/sse` | ❌ | ✅ |
+| `GIT_ENABLED` | Enable Git integration features | `true` | ✅ | ✅ |
 
 ## 🐛 Troubleshooting
 

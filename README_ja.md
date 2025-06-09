@@ -10,12 +10,16 @@ Claude Desktop と Web版Claude で使用できる、強力なModel Context Prot
 - **Laravelプロジェクト対応**: Laravelプロジェクト構造の自動分析機能
 - **リアルタイム更新**: SSE (Server-Sent Events) によるリアルタイム通信
 - **OAuth統合**: Web版Claude接続用の完全なOAuth 2.0フロー
+- **Git統合機能**: AI駆動のコミットメッセージ生成を含む包括的なGit操作
+- **サブディレクトリGit対応**: ネストしたGitリポジトリを独立して管理
+- **Laravel最適化コミットメッセージ**: Laravel特化のコミット形式をAIが自動生成
 
 ## 📋 必要な環境
 
 - **Node.js**: v18.0.0 以上（v22.15.0でテスト済み）
 - **npm**: 最新版
 - **TypeScript**: v5.5.0 以上
+- **Git**: バージョン管理システム（Git統合機能用）
 
 ## ⚙️ 設定方法
 
@@ -417,7 +421,9 @@ curl https://mcp.your-domain.com/health
 
 すべてのツールには自動的に `PROJECT_ID` が前置されます：
 
-### `[PROJECT_ID]_list_files`
+### ファイル操作
+
+#### `[PROJECT_ID]_list_files`
 フィルタリングオプション付きでファイルとディレクトリを一覧表示。
 
 ```json
@@ -429,7 +435,7 @@ curl https://mcp.your-domain.com/health
 }
 ```
 
-### `[PROJECT_ID]_read_file`
+#### `[PROJECT_ID]_read_file`
 エンコーディング対応でファイル内容を読み取り。
 
 ```json
@@ -439,7 +445,7 @@ curl https://mcp.your-domain.com/health
 }
 ```
 
-### `[PROJECT_ID]_get_laravel_structure`
+#### `[PROJECT_ID]_get_laravel_structure`
 Laravelプロジェクトの構造を分析し、統計情報を取得。
 
 ```json
@@ -449,7 +455,7 @@ Laravelプロジェクトの構造を分析し、統計情報を取得。
 }
 ```
 
-### `[PROJECT_ID]_search_files`
+#### `[PROJECT_ID]_search_files`
 パターンマッチングと内容検索でファイルを検索。
 
 ```json
@@ -461,12 +467,166 @@ Laravelプロジェクトの構造を分析し、統計情報を取得。
 }
 ```
 
-### `[PROJECT_ID]_get_server_info`
+#### `[PROJECT_ID]_get_server_info`
 サーバーステータスと設定情報を取得。
 
 ```json
 {}
 ```
+
+### Git操作
+
+#### `[PROJECT_ID]_git_status`
+現在のGitリポジトリの状態を表示。
+
+```json
+{
+  "directory": "サブディレクトリ名"  // オプション: サブディレクトリのGitリポジトリ用
+}
+```
+
+#### `[PROJECT_ID]_git_diff`
+ステージング対応でGit差分を表示。
+
+```json
+{
+  "staged": false,                    // trueならステージ済み変更を表示
+  "file_path": "specific/file.php",   // オプション: 特定ファイルの差分
+  "directory": "サブディレクトリ名"    // オプション: サブディレクトリのGitリポジトリ用
+}
+```
+
+#### `[PROJECT_ID]_git_log`
+フィルタリング機能付きでGitコミット履歴を表示。
+
+```json
+{
+  "limit": 10,                       // 表示するコミット数
+  "oneline": false,                  // コンパクトな1行形式
+  "author": "john@example.com",      // 作成者でフィルタ
+  "since": "1 week ago",             // 期間でフィルタ
+  "directory": "サブディレクトリ名"    // オプション: サブディレクトリのGitリポジトリ用
+}
+```
+
+#### `[PROJECT_ID]_git_branch`
+Gitブランチ情報を表示。
+
+```json
+{
+  "directory": "サブディレクトリ名"  // オプション: サブディレクトリのGitリポジトリ用
+}
+```
+
+#### `[PROJECT_ID]_git_show`
+コミットの詳細情報を表示。
+
+```json
+{
+  "commit": "HEAD",                // コミットハッシュまたは参照
+  "directory": "サブディレクトリ名" // オプション: サブディレクトリのGitリポジトリ用
+}
+```
+
+#### `[PROJECT_ID]_git_blame`
+ファイルの行ごとの変更履歴を表示。
+
+```json
+{
+  "file_path": "app/Models/User.php", // 必須: 分析するファイル
+  "directory": "サブディレクトリ名"    // オプション: サブディレクトリのGitリポジトリ用
+}
+```
+
+#### `[PROJECT_ID]_git_generate_commit_message`
+Laravelプロジェクト用AI駆動コミットメッセージ生成。
+
+```json
+{
+  "directory": "サブディレクトリ名"  // オプション: サブディレクトリのGitリポジトリ用
+}
+```
+
+**機能:**
+- ステージされた変更を自動的に分析
+- Laravelファイルパターンを認識（コントローラー、モデル、マイグレーション、ビュー、ルート）
+- 適切なコミットプレフィックスを生成: `feat(api):`, `feat(db):`, `feat(ui):`, `config:`
+- 実際のコード変更に基づいた意味のあるコミットメッセージを提供
+
+**生成メッセージの例:**
+- `feat(api): UserController - ADD: role validation method`
+- `feat(db): create_users_table - ADD: role_id column`
+- `feat(ui): dashboard.blade.php - ADD: user statistics widget`
+
+#### `[PROJECT_ID]_git_commit_analyze`
+変更を分析してコミット分割戦略を提案。
+
+```json
+{
+  "directory": "サブディレクトリ名"  // オプション: サブディレクトリのGitリポジトリ用
+}
+```
+
+**分析機能:**
+- ファイル変更統計（新規、変更、削除、リネーム）
+- コミットサイズの推奨事項
+- 大きなコミットの分割提案
+- Laravel特有のパターン認識
+
+## 🔄 Gitワークフロー統合
+
+### 典型的な開発ワークフロー
+
+```bash
+# 1. 現在のリポジトリ状態を確認
+# [PROJECT_ID]_git_status
+
+# 2. ステージング前に変更内容を確認
+# [PROJECT_ID]_git_diff
+
+# 3. ファイルを手動でステージング
+git add app/Http/Controllers/UserController.php
+
+# 4. AIコミットメッセージを生成
+# [PROJECT_ID]_git_generate_commit_message
+
+# 5. 生成されたメッセージでコミット
+git commit -m "feat(api): UserController - ADD: role validation method"
+```
+
+### サブディレクトリGit管理
+
+ネストしたGitリポジトリを持つプロジェクト（例：メインプロジェクト + MCPサーバー）の場合：
+
+```bash
+# メインプロジェクトの操作
+# [PROJECT_ID]_git_status
+
+# サブディレクトリの操作
+# [PROJECT_ID]_git_status({directory: "mcp-server"})
+# [PROJECT_ID]_git_diff({directory: "mcp-server"})
+# [PROJECT_ID]_git_generate_commit_message({directory: "mcp-server"})
+```
+
+### Laravel最適化コミットメッセージ
+
+AIがLaravelプロジェクト構造を分析し、適切なコミットメッセージを生成：
+
+| ファイルタイプ | 生成プレフィックス | 例 |
+|-------------|-----------------|---|
+| コントローラー | `feat(api):` | `feat(api): UserController - ADD: authentication method` |
+| モデル | `feat(model):` | `feat(model): User.php - ADD: hasRoles relationship` |
+| マイグレーション | `feat(db):` | `feat(db): create_users_table - ADD: role_id column` |
+| ビュー | `feat(ui):` | `feat(ui): dashboard.blade.php - ADD: statistics widget` |
+| ルート | `feat(route):` | `feat(route): api.php - ADD: user management endpoints` |
+| 設定 | `config:` | `config: app.php - UPDATE: timezone to Asia/Tokyo` |
+
+### コミット分析と最適化
+
+`git_commit_analyze`を使用してコミットを最適化：
+- **大きなコミット**: 機能ごとの分割を提案
+- **混在した変更**: 新機能とバグ修正の分離を推奨
+- **Laravelパターン**: フレームワーク固有のファイルタイプを認識
 
 ## ⚙️ 環境変数
 
@@ -478,6 +638,7 @@ Laravelプロジェクトの構造を分析し、統計情報を取得。
 | `PORT` | HTTPサーバーポート | なし | ❌ | ✅ |
 | `BASE_URL` | HTTPモード用ベースURL | `http://localhost:3001` | ❌ | ✅ |
 | `ENDPOINT_PATH` | MCPエンドポイントパス | `/sse` | ❌ | ✅ |
+| `GIT_ENABLED` | Git統合機能を有効化 | `true` | ✅ | ✅ |
 
 ## 🐛 トラブルシューティング
 
