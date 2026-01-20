@@ -9,18 +9,18 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
-import express, { Request, Response, NextFunction } from 'express';
-import { randomUUID } from 'node:crypto';
+import { exec } from 'child_process';
+import express, { NextFunction, Request, Response } from 'express';
 import fs from 'fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'path';
-import { spawn, exec } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
 // 基本設定
 const SERVER_ROOT = process.env.SERVER_ROOT || process.cwd();
-const ALLOWED_EXTENSIONS = ['.php', '.js', '.ts', '.json', '.md', '.txt', '.env', '.env.example', '.yaml', '.yml', '.blade.php', '.service', '.conf', '.sh', '.xml'];
+const ALLOWED_EXTENSIONS = ['.php', '.js', '.ts', '.tsx', '.json', '.md', '.txt', '.env', '.env.example', '.yaml', '.yml', '.blade.php', '.service', '.conf', '.sh', '.xml', '.bak', '.old', '.new', '.html', '.htm', '.css', '.scss', '.sass', '.rb', '.png', '.gif', '.jpg', '.jpeg', '.svg', '.java', '.jsp', '.properties', '.sql', '.gradle', '.bat', '.vue', '.xls', '.xlsx', '.lock', '.liquid', '.go', '.mod', '.plist', '.swift', '.iss'];
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001;
 const BASE_URL = process.env.BASE_URL || 'https://mcp.ssl-shop.jp';
 const ENDPOINT_PATH = process.env.ENDPOINT_PATH || '/sse';
